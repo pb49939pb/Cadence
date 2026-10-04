@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Cadence</title>
+<meta name="description" content="A colorful to-do list with daily, weekly, monthly and yearly cadences.">
+<meta name="theme-color" content="#07060D">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cadence">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="aurora" aria-hidden="true"><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i></div>
+<div class="flash" id="flash" aria-hidden="true"></div>
+
+<main class="pager" id="pager" aria-live="polite"></main>
+
+<nav class="tabbar" id="tabbar" aria-label="Cadences">
+  <div class="tab-indicator" id="tabIndicator"></div>
+</nav>
+
+<canvas id="confetti" aria-hidden="true"></canvas>
+<div class="banner-wrap" id="bannerWrap" aria-live="assertive"></div>
+
+<div class="sheet-backdrop" id="backdrop" hidden></div>
+<section class="sheet" id="sheet" role="dialog" aria-modal="true" hidden></section>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
