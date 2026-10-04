@@ -258,3 +258,20 @@ svg { display: block; }
   *, *::before, *::after { transition-duration: 0.01ms !important; }
 }
 .toast-action { flex: none; padding: 6px 12px; border-radius: 99px; font-size: 14px; font-weight: 900; color: var(--ink); background: linear-gradient(135deg, var(--c1), var(--c2)); }
+
+/* ---------- Overdue ---------- */
+.task.overdue {
+  border: 1.5px solid rgba(255, 90, 95, 0.75);
+  background: linear-gradient(90deg, rgba(255, 69, 58, 0.24), var(--card) 70%);
+  animation: lateGlow 2.2s ease-in-out infinite;
+}
+.task.overdue .orb { border-style: dashed; }
+.task.overdue .orb::after { content: "!"; position: absolute; top: -7px; right: -7px; width: 17px; height: 17px; border-radius: 50%; background: #ff3b47; color: #fff; font-size: 12px; font-weight: 900; line-height: 17px; text-align: center; box-shadow: 0 0 8px #ff3b47; }
+.badge.late { color: #fff; background: linear-gradient(135deg, #ff3b47, #ff6a3d); }
+@keyframes lateGlow { 50% { box-shadow: 0 0 18px rgba(255, 59, 71, 0.45); } }
+.overdue-strip { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-radius: 16px; background: linear-gradient(90deg, rgba(255, 59, 71, 0.28), rgba(255, 106, 61, 0.12)); border: 1px solid rgba(255, 90, 95, 0.5); font-size: 15px; margin-bottom: -6px; }
+.overdue-strip svg { width: 18px; height: 18px; color: #ff5a5f; flex: none; }
+.overdue-strip b { font-weight: 900; }
+.overdue-strip span { margin-left: auto; font-size: 13px; font-weight: 600; color: rgba(255, 255, 255, 0.75); }
+.tab .count.late { background: #ff3b47; color: #fff; box-shadow: 0 0 8px #ff3b47; }
+@media (prefers-reduced-motion: reduce) { .task.overdue { animation: none; } }

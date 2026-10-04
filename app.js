@@ -61,6 +61,7 @@ const ICON = {
   upload: '<path d="M12 21V9M7 14l5-5 5 5M4 4h16"/>',
   sound: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke="none"/><path d="M16 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>',
   buzz: '<rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M3 9v6M21 9v6"/>',
+  alert: '<path d="M12 3.2L22 20.5H2z" fill="currentColor" stroke="none"/><path d="M12 9.5v5M12 17.3v.2" stroke="#07060D" stroke-width="2.6"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5" stroke-width="2.6"/>',
 };
 const icon = (name, extra = "") =>
@@ -215,17 +216,37 @@ function datedItems(scope, p) {
     if (scope === "day") {
       const k = lastDue(t, today);
       if (k && (k === today || !isDone(t, k))) out.push({ t, p: k, key: `${t.id}@${k}` });
-    } else if (scope === "week") {
+    } else if (showsOn(t, scope)) {
       const ws = parseKey(p);
-      const inWeek = dueBetween(t, ws, addPeriods("week", ws, 1));
+      const inPeriod = dueBetween(t, ws, addPeriods(scope, ws, 1));
       const prev = lastDue(t, keyOf(addDays(ws, -1)));
-      // An overdue one carries into this week until it's done or the next due date arrives.
-      if (prev && !isDone(t, prev) && !inWeek.some((k) => k <= today)) out.push({ t, p: prev, key: `${t.id}@${prev}` });
-      for (const k of inWeek) out.push({ t, p: k, key: `${t.id}@${k}` });
+      // An overdue one carries into this period until it's done or the next due date arrives.
+      if (prev && !isDone(t, prev) && !inPeriod.some((k) => k <= today)) out.push({ t, p: prev, key: `${t.id}@${prev}` });
+      for (const k of inPeriod) out.push({ t, p: k, key: `${t.id}@${k}` });
     }
   }
   return out;
 }
+/** Weekly schedules show on Today and Week; monthly also on Month; yearly on every page. */
+const RANK = { day: 0, week: 1, month: 2, year: 3, weekly: 1, monthly: 2, yearly: 3 };
+const showsOn = (t, scope) => RANK[scope] <= RANK[t.sched.type];
+
+/** The day a row was due, if it's past due and not done. */
+function overdueSince(item) {
+  const { t, p } = item;
+  if (isDone(t, p)) return null;
+  const today = keyOf(now());
+  if (t.sched) return p < today ? p : null;
+  if (t.repeats || t.completions.length || t.start >= periodKey(t.scope)) return null;
+  return keyOf(addDays(addPeriods(t.scope, parseKey(t.start), 1), -1)); // last day of its period
+}
+function lateText(dueKey) {
+  const days = Math.round((startOf("day", now()) - parseKey(dueKey)) / 864e5);
+  if (days < 14) return `${days} day${days === 1 ? "" : "s"} late`;
+  if (days < 60) return `${Math.floor(days / 7)} weeks late`;
+  return `${Math.floor(days / 30)} months late`;
+}
+
 function items(scope, p = periodKey(scope)) {
   return visible(scope, p).map((t) => ({ t, p, key: t.id })).concat(datedItems(scope, p));
 }
@@ -251,10 +272,10 @@ function pastProgress(scope, p) {
       if (t.completions.length) done++;
     }
   }
-  if (scope === "day" || scope === "week") {
+  {
     const from = parseKey(p);
     for (const t of state.tasks) {
-      if (!t.sched || t.createdAt >= end) continue;
+      if (!t.sched || t.createdAt >= end || (scope !== "day" && !showsOn(t, scope))) continue;
       for (const k of dueBetween(t, from, new Date(end))) {
         total++;
         if (isDone(t, k)) done++;
@@ -326,7 +347,7 @@ function spread(scope) {
     }
   }
   for (const t of state.tasks) {
-    if (t.scope !== scope && !(t.sched && scope === "week")) continue;
+    if (t.scope !== scope && !(t.sched && showsOn(t, scope))) continue;
     for (const c of t.completions) {
       const d = new Date(c.at);
       if (d < start || d >= end) continue;
@@ -553,6 +574,7 @@ function buildPages() {
           </div>
         </header>
         <div class="chips" data-chips></div>
+        <div class="overdue-strip" data-overdue hidden></div>
         <div class="list" data-list></div>
         <div class="card empty" data-empty hidden>
           ${icon(m.icon)}
@@ -626,6 +648,7 @@ function updateTabs() {
     const c = b.querySelector(".count");
     c.hidden = left === 0;
     c.textContent = left;
+    c.classList.toggle("late", items(s).some(overdueSince));
     b.setAttribute("aria-label", `${META[s].tab}, ${left} left`);
     if (s === selected) {
       ind.style.width = b.offsetWidth + "px";
@@ -647,7 +670,12 @@ function renderPage(s) {
   const left = pr.total - pr.done;
 
   $("[data-sub]", page).textContent = periodTitle(s, p);
+  const late = items(s, p).map(overdueSince).filter(Boolean).sort();
+  const strip = $("[data-overdue]", page);
+  strip.hidden = late.length === 0;
+  if (late.length) strip.innerHTML = `${icon("alert")}<b>${late.length} overdue</b><span>Oldest ${lateText(late[0])}</span>`;
   $("[data-headline]", page).textContent =
+    late.length ? `${late.length} overdue. Knock those out first.` :
     pr.total === 0 ? "A clean slate." :
     left === 0 ? "All clear. Legendary." :
     pr.done === 0 ? `${left} to go. First one's the hardest.` :
@@ -702,6 +730,9 @@ function ordered(s, p) {
   return items(s, p).sort((a, b) => {
     const ad = isDone(a.t, a.p) && !settling.has(a.key), bd = isDone(b.t, b.p) && !settling.has(b.key);
     if (ad !== bd) return ad ? 1 : -1;
+    const ao = overdueSince(a), bo = overdueSince(b);
+    if (!!ao !== !!bo) return ao ? -1 : 1;
+    if (ao && bo && ao !== bo) return ao < bo ? -1 : 1;
     if (a.p !== b.p) return a.p < b.p ? -1 : 1;
     return a.t.createdAt - b.t.createdAt;
   });
@@ -769,20 +800,21 @@ function updateCard(row, item, s, p) {
   $(".task-title", el).textContent = t.title;
   const badges = [];
   const st = taskStreak(t);
+  const late = overdueSince(item);
+  el.classList.toggle("overdue", !!late);
+  if (late) badges.push(badge(`${lateText(late)} · due ${dueLabel(late)}`, "alert", "#FF5A5F", "late"));
   if (t.sched) {
     const today = keyOf(now());
     badges.push(badge(schedLabel(t.sched), "calendar", META.week.colors[0]));
-    if (item.p < p || (s === "day" && item.p < today)) badges.push(badge(`Overdue · ${dueLabel(item.p)}`, "carry", "#FFD60A"));
-    else if (s === "week") badges.push(badge(item.p === today ? "Today" : dueLabel(item.p), "sun", item.p === today ? META.day.colors[0] : "rgba(255,255,255,.75)"));
+    if (!late && s !== "day") badges.push(badge(item.p === today ? "Today" : dueLabel(item.p), "sun", item.p === today ? META.day.colors[0] : "rgba(255,255,255,.75)"));
     if (st > 1) badges.push(badge(`${st} in a row`, "flame", "#FF8A00"));
   } else {
     if (t.repeats) badges.push(badge(META[t.scope].cadence, "repeat", META[t.scope].colors[0]));
     if (st > 1) badges.push(badge(`${st} ${META[t.scope].unit} streak`, "flame", "#FF8A00"));
-    if (isCarried(t, p)) badges.push(badge("Carried over", "carry", "#FFD60A"));
   }
   $(".badges", el).innerHTML = badges.join("");
 }
-const badge = (text, i, col) => `<span class="badge" style="--col:${col}">${icon(i)}${esc(text)}</span>`;
+const badge = (text, i, col, cls = "") => `<span class="badge ${cls}" style="--col:${col}">${icon(i)}${esc(text)}</span>`;
 
 /* Tap toggles, long-press (or right-click) opens actions, swipe left deletes. */
 const OPEN_X = -96;      // resting offset when the Delete button is showing
