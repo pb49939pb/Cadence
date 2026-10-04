@@ -62,6 +62,8 @@ const ICON = {
   sound: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke="none"/><path d="M16 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>',
   buzz: '<rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M3 9v6M21 9v6"/>',
   alert: '<path d="M12 3.2L22 20.5H2z" fill="currentColor" stroke="none"/><path d="M12 9.5v5M12 17.3v.2" stroke="#07060D" stroke-width="2.6"/>',
+  chev: '<path d="M9 5l7 7-7 7" stroke-width="2.6"/>',
+  zzz: '<path d="M4 5h6l-6 7h6M13 12h7l-7 8h7" stroke-width="2.4"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5" stroke-width="2.6"/>',
 };
 const icon = (name, extra = "") =>
@@ -231,12 +233,50 @@ function datedItems(scope, p) {
 const RANK = { day: 0, week: 1, month: 2, year: 3, weekly: 1, monthly: 2, yearly: 3 };
 const showsOn = (t, scope) => RANK[scope] <= RANK[t.sched.type];
 
+/* ---------- Snooze ----------
+   One-off tasks: hideUntil (and start moves to the period containing that day).
+   Repeating/scheduled tasks: snooze = {p, until} hides just that one period or due date. */
+function snoozedUntil(item) {
+  const { t, p } = item;
+  if (!t.repeats) return t.hideUntil || null;
+  return t.snooze && t.snooze.p === p ? t.snooze.until : null;
+}
+const isSnoozed = (item) => { const u = snoozedUntil(item); return !!u && u > keyOf(now()) && !isDone(item.t, item.p); };
+
+function snoozeTask(t, p, until) {
+  const before = { start: t.start, hideUntil: t.hideUntil, snooze: t.snooze };
+  if (!t.repeats) {
+    t.hideUntil = until;
+    const np = periodKey(t.scope, parseKey(until));
+    if (np > t.start) t.start = np;
+  } else {
+    t.snooze = { p, until };
+  }
+  return () => { // undo
+    t.start = before.start;
+    if (before.hideUntil) t.hideUntil = before.hideUntil; else delete t.hideUntil;
+    if (before.snooze) t.snooze = before.snooze; else delete t.snooze;
+  };
+}
+function unsnoozeTask(t) {
+  if (!t.repeats && t.hideUntil) {
+    delete t.hideUntil;
+    const cur = periodKey(t.scope);
+    if (t.start > cur) t.start = cur;
+  }
+  delete t.snooze;
+}
+
 /** The day a row was due, if it's past due and not done. */
 function overdueSince(item) {
   const { t, p } = item;
   if (isDone(t, p)) return null;
   const today = keyOf(now());
-  if (t.sched) return p < today ? p : null;
+  if (t.sched) {
+    const u = snoozedUntil(item);
+    const due = u && u > p ? u : p;
+    return due < today ? due : null;
+  }
   if (t.repeats || t.completions.length || t.start >= periodKey(t.scope)) return null;
   return keyOf(addDays(addPeriods(t.scope, parseKey(t.start), 1), -1)); // last day of its period
 }
@@ -247,8 +287,18 @@ function lateText(dueKey) {
   return `${Math.floor(days / 30)} months late`;
 }
 
-function items(scope, p = periodKey(scope)) {
+function allItems(scope, p = periodKey(scope)) {
   return visible(scope, p).map((t) => ({ t, p, key: t.id })).concat(datedItems(scope, p));
+}
+const items = (scope, p) => allItems(scope, p).filter((i) => !isSnoozed(i));
+function snoozedItems(scope, p = periodKey(scope)) {
+  const out = allItems(scope, p).filter(isSnoozed);
+  // One-off tasks snoozed into a later period aren't in this period's list, but belong in its Snoozed section.
+  const today = keyOf(now());
+  for (const t of state.tasks) {
+    if (t.scope === scope && !t.repeats && !t.completions.length && t.hideUntil > today && t.start > p) out.push({ t, p, key: t.id });
+  }
+  return out;
 }
 const taskIdOf = (key) => key.split("@")[0];
 const colorScope = (t) => (t.sched ? "day" : t.scope);
@@ -576,6 +626,10 @@ function buildPages() {
         <div class="chips" data-chips></div>
         <div class="overdue-strip" data-overdue hidden></div>
         <div class="list" data-list></div>
+        <div class="snoozed" data-snoozed hidden>
+          <button class="snoozed-toggle" data-snooze-toggle aria-expanded="false">${icon("zzz")}<span></span>${icon("chev", 'class="snz-chev"')}</button>
+          <div class="snoozed-list" hidden></div>
+        </div>
         <div class="card empty" data-empty hidden>
           ${icon(m.icon)}
           <h3>${s === "day" ? "Nothing due today" : `Nothing set for this ${m.unit}`}</h3>
@@ -586,6 +640,15 @@ function buildPages() {
       </div>`;
     pager.appendChild(sec);
     pages[s] = sec;
+    $("[data-snoozed]", sec).addEventListener("click", (e) => {
+      const row = e.target.closest("[data-open]");
+      if (row) { Feel.tap(); openTaskSheet(row.dataset.open); return; }
+      if (e.target.closest("[data-snooze-toggle]")) {
+        snoozeOpen.has(s) ? snoozeOpen.delete(s) : snoozeOpen.add(s);
+        Feel.tap();
+        renderSnoozed(s, periodKey(s));
+      }
+    });
   }
 
   const bar = $("#tabbar");
@@ -716,6 +779,7 @@ function renderPage(s) {
   });
 
   renderList(s, p);
+  renderSnoozed(s, p);
   renderCharts(s, p, pr);
 }
 
@@ -773,16 +837,37 @@ function renderList(s, p) {
   }
 }
 
+const snoozeOpen = new Set();
+function renderSnoozed(s, p) {
+  const box = $("[data-snoozed]", pages[s]);
+  const rows = snoozedItems(s, p).sort((a, b) => (snoozedUntil(a) < snoozedUntil(b) ? -1 : 1));
+  box.hidden = rows.length === 0;
+  if (!rows.length) return;
+  const open = snoozeOpen.has(s);
+  const btn = $("[data-snooze-toggle]", box);
+  btn.setAttribute("aria-expanded", String(open));
+  btn.classList.toggle("open", open);
+  $("span", btn).textContent = `${rows.length} snoozed`;
+  const list = $(".snoozed-list", box);
+  list.hidden = !open;
+  list.innerHTML = rows.map((r) => `
+    <button class="snoozed-row" data-open="${esc(r.key)}" style="--hue:${HUES[r.t.hue % HUES.length]}">
+      <i class="snz-dot"></i><span class="snz-title">${esc(r.t.title)}</span>
+      <small>Until ${esc(dueLabel(snoozedUntil(r)))}</small>
+    </button>`).join("");
+}
+
 function createCard(key) {
   const row = document.createElement("div");
   row.className = "swipe-row";
   row.dataset.id = key;
   row.innerHTML = `
     <button class="swipe-del" tabindex="-1" aria-hidden="true">${icon("trash")}<span>Delete</span></button>
-    <div class="task" data-id="${esc(key)}" tabindex="0" role="button">
+    <div class="task" data-id="${esc(key)}" tabindex="0" role="group">
       <div class="sweep"></div>
-      <div class="orb">${icon("check")}<i class="wave"></i></div>
+      <button class="orb-hit" type="button"><span class="orb">${icon("check")}<i class="wave"></i></span></button>
       <div class="task-body"><div class="task-title"></div><div class="badges"></div></div>
+      <span class="chev" aria-hidden="true">${icon("chev")}</span>
       <div class="cheer"></div>
     </div>`;
   attachPress($(".task", row), row);
@@ -795,8 +880,10 @@ function updateCard(row, item, s, p) {
   const done = isDone(t, item.p);
   el.style.setProperty("--hue", HUES[t.hue % HUES.length]);
   el.classList.toggle("done", done);
-  el.setAttribute("aria-pressed", String(done));
-  el.setAttribute("aria-label", `${t.title}${done ? ", done" : ""}`);
+  const hit = $(".orb-hit", el);
+  hit.setAttribute("aria-pressed", String(done));
+  hit.setAttribute("aria-label", done ? `Mark “${t.title}” not done` : `Complete “${t.title}”`);
+  el.setAttribute("aria-label", `${t.title}${done ? ", done" : ""}. Open to edit or snooze.`);
   $(".task-title", el).textContent = t.title;
   const badges = [];
   const st = taskStreak(t);
@@ -816,13 +903,13 @@ function updateCard(row, item, s, p) {
 }
 const badge = (text, i, col, cls = "") => `<span class="badge ${cls}" style="--col:${col}">${icon(i)}${esc(text)}</span>`;
 
-/* Tap toggles, long-press (or right-click) opens actions, swipe left deletes. */
+/* The circle completes a task; tapping anywhere else on the card opens it. Swipe left deletes. */
 const OPEN_X = -96;      // resting offset when the Delete button is showing
 let openRow = null;      // { row, close } for the one row swiped open
 
 function attachPress(el, row) {
   const del = $(".swipe-del", row);
-  let timer = null, startX = 0, startY = 0, long = false;
+  let startX = 0, startY = 0;
   let mode = null;       // null until we know if this is a tap, a scroll or a swipe
   let base = 0, offset = 0, armed = false, swallowClick = false;
 
@@ -834,34 +921,24 @@ function attachPress(el, row) {
     del.style.opacity = Math.min(1, -x / 60);
   };
   const close = () => { setOffset(0, true); base = 0; if (openRow && openRow.row === row) openRow = null; };
-  const cancelHold = () => { clearTimeout(timer); el.classList.remove("pressing"); };
 
   el.addEventListener("pointerdown", (e) => {
     if (openRow && openRow.row !== row) openRow.close();
-    long = false; mode = null; armed = false;
+    mode = null; armed = false;
     startX = e.clientX; startY = e.clientY;
     base = offset;
-    if (base === 0) {
-      el.classList.add("pressing");
-      timer = setTimeout(() => {
-        if (mode) return;
-        long = true;
-        el.classList.remove("pressing");
-        Feel.tap();
-        openActions(el.dataset.id);
-      }, 520);
-    }
+    if (!e.target.closest(".orb-hit")) el.classList.add("pressing");
   });
   el.addEventListener("pointermove", (e) => {
     const dx = e.clientX - startX, dy = e.clientY - startY;
     if (!mode) {
       if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
         mode = "swipe";
-        cancelHold();
+        el.classList.remove("pressing");
         try { el.setPointerCapture(e.pointerId); } catch {}
       } else if (Math.abs(dy) > 8) {
         mode = "scroll";
-        cancelHold();
+        el.classList.remove("pressing");
       }
     }
     if (mode !== "swipe") return;
@@ -876,7 +953,7 @@ function attachPress(el, row) {
     }
   });
   const end = () => {
-    cancelHold();
+    el.classList.remove("pressing");
     if (mode !== "swipe") return;
     swallowClick = true;
     row.classList.remove("armed");
@@ -888,17 +965,20 @@ function attachPress(el, row) {
     } else close();
   };
   el.addEventListener("pointerup", end);
-  el.addEventListener("pointercancel", () => { cancelHold(); if (mode === "swipe") close(); });
-  el.addEventListener("pointerleave", () => { if (mode !== "swipe") cancelHold(); });
-  el.addEventListener("contextmenu", (e) => { e.preventDefault(); cancelHold(); if (!long && !mode) openActions(el.dataset.id); long = true; });
-  el.addEventListener("click", () => {
+  el.addEventListener("pointercancel", () => { el.classList.remove("pressing"); if (mode === "swipe") close(); });
+  el.addEventListener("pointerleave", () => { if (mode !== "swipe") el.classList.remove("pressing"); });
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+  el.addEventListener("click", (e) => {
     if (swallowClick) { swallowClick = false; return; }
-    if (long) { long = false; return; }
     if (offset !== 0) { close(); return; }
-    toggle(el.dataset.id, el);
+    if (e.target.closest(".orb-hit")) { toggle(el.dataset.id, el); return; }
+    Feel.tap();
+    openTaskSheet(el.dataset.id);
   });
   el.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(el.dataset.id, el); }
+    if (e.target !== el) return;
+    if (e.key === "Enter") { e.preventDefault(); openTaskSheet(el.dataset.id); }
+    if (e.key === " ") { e.preventDefault(); toggle(el.dataset.id, el); }
     if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteWithSwipe(el.dataset.id, row, el); }
   });
   del.addEventListener("click", () => deleteWithSwipe(el.dataset.id, row, el));
@@ -992,9 +1072,12 @@ function celebrate(s) {
 }
 
 /* ---------- Sheets ---------- */
-let sheetCleanup = null;
+let sheetCleanup = null, sheetToken = 0;
 function openSheet(html, scope, onMount) {
-  const sheet = $("#sheet"), back = $("#backdrop");
+  // Swap in a fresh element so listeners from earlier sheets can't fire on this one.
+  const old = $("#sheet"), sheet = old.cloneNode(false), back = $("#backdrop");
+  old.replaceWith(sheet);
+  sheetToken++; // cancels a pending close
   sheet.style.cssText = scopeVars(scope);
   sheet.innerHTML = html;
   sheet.hidden = false;
@@ -1010,31 +1093,71 @@ function closeSheet() {
   sheet.classList.add("closing");
   back.hidden = true;
   if (document.activeElement) document.activeElement.blur();
-  setTimeout(() => { sheet.hidden = true; sheet.innerHTML = ""; }, 240);
+  const token = ++sheetToken;
+  setTimeout(() => { if (token === sheetToken) { sheet.hidden = true; sheet.innerHTML = ""; } }, 240);
   if (sheetCleanup) sheetCleanup();
   sheetCleanup = null;
 }
 addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 const sheetHead = (title) => `<div class="sheet-head"><h2>${title}</h2><button class="close" data-close aria-label="Close">${icon("close")}</button></div>`;
 
-function openAdd() {
+const openAdd = () => openTaskSheet(null);
+
+/** New task (key = null) or open an existing one: edit everything, snooze, delete. */
+function openTaskSheet(key) {
   const today = now();
-  let scope = selected, mode = "once", hue = Math.floor(Math.random() * HUES.length);
-  let schedType = "weekly", days = [today.getDay()], mday = today.getDate();
-  let yearly = keyOf(today);
+  let t = key ? state.tasks.find((x) => x.id === taskIdOf(key)) : null;
+  if (key && !t) return;
+  // Data may be reloaded while the sheet is open (app switch, another tab); always act on the live copy.
+  const live = () => { if (t) t = state.tasks.find((x) => x.id === t.id) || t; return t; };
+  const itemP = key && key.includes("@") ? key.split("@")[1] : t ? periodKey(t.scope) : null;
+  const item = t ? { t, p: itemP, key } : null;
+
+  let mode = t ? (t.sched ? "sched" : t.repeats ? "every" : "once") : "once";
+  let scope = t && !t.sched ? t.scope : selected;
+  let hue = t ? t.hue : Math.floor(Math.random() * HUES.length);
+  const sc0 = t && t.sched;
+  let schedType = sc0 ? sc0.type : "weekly";
+  let days = sc0 && sc0.type === "weekly" ? [...sc0.days] : [today.getDay()];
+  let mday = sc0 && sc0.type === "monthly" ? sc0.day : today.getDate();
+  let yearly = sc0 && sc0.type === "yearly" ? keyOf(new Date(today.getFullYear(), sc0.month, sc0.day)) : keyOf(today);
+
+  const snoozeChoices = () => {
+    const d = (n) => keyOf(addDays(today, n));
+    const sat = (6 - today.getDay() + 7) % 7 || 7;
+    const out = [["Tomorrow", d(1)]];
+    if (sat > 1) out.push(["This weekend", d(sat)]);
+    out.push(["Next week", periodKeyOffset("week", 1)]);
+    out.push(["Next month", periodKeyOffset("month", 1)]);
+    return out;
+  };
+  const snoozedNow = item && isSnoozed(item) ? snoozedUntil(item) : null;
+
   openSheet(`
-    ${sheetHead("New task")}
-    <textarea class="field" id="newTitle" rows="1" placeholder="What needs doing?" enterkeyhint="done" maxlength="120"></textarea>
+    ${sheetHead(t ? "Task" : "New task")}
+    <textarea class="field" id="taskTitle" rows="1" placeholder="What needs doing?" enterkeyhint="done" maxlength="120"></textarea>
+    ${t ? `<div class="snooze-box">
+      <div class="section-label">${icon("zzz", 'class="lbl-ic"')}Snooze</div>
+      ${snoozedNow ? `<div class="snoozed-note">Snoozed until <b>${esc(dueLabel(snoozedNow))}</b><button class="pill mini" data-unsnooze>Wake it up</button></div>` : ""}
+      <div class="pills">${snoozeChoices().map(([l, k]) => `<button class="pill snz" data-snooze="${k}"><span>${l}</span><small>${esc(dueLabel(k))}</small></button>`).join("")}</div>
+      <label class="pick-date">${icon("calendar")}<span>Pick a date</span><input type="date" id="snoozeDate" min="${keyOf(addDays(today, 1))}"></label>
+    </div>` : ""}
     <div><div class="section-label">How often</div><div class="pills" data-often></div><p class="hint" data-hint></p></div>
     <div data-when-wrap><div class="section-label">When</div><div class="pills" data-when></div></div>
     <div data-sched-wrap hidden><div class="section-label">Repeats</div><div class="pills three" data-stype></div><div class="sched-pick" data-spick></div></div>
     <div><div class="section-label">Color</div><div class="swatches" data-swatches></div></div>
-    <button class="cta" id="addGo" disabled>${icon("plus")}Add task</button>`, scope, (sheet) => {
-    const field = $("#newTitle", sheet), go = $("#addGo", sheet);
+    <button class="cta" id="taskGo" disabled>${t ? icon("check") + "Save changes" : icon("plus") + "Add task"}</button>
+    ${t ? `<button class="menu-item red center" data-delete>${icon("trash")}Delete task</button>` : ""}`, scope, (sheet) => {
+    const field = $("#taskTitle", sheet), go = $("#taskGo", sheet);
+    field.value = t ? t.title : "";
     const sched = () => schedType === "weekly" ? { type: "weekly", days: [...days].sort() }
       : schedType === "monthly" ? { type: "monthly", day: mday }
       : { type: "yearly", month: parseKey(yearly).getMonth(), day: parseKey(yearly).getDate() };
     const valid = () => field.value.trim() && !(mode === "sched" && schedType === "weekly" && days.length === 0);
+    const cadenceChanged = () => t && (
+      mode !== (t.sched ? "sched" : t.repeats ? "every" : "once") ||
+      (mode !== "sched" && scope !== t.scope) ||
+      (mode === "sched" && JSON.stringify(sched()) !== JSON.stringify(t.sched)));
     const paint = () => {
       const look = mode === "sched" ? "week" : scope;
       const pv = (x) => `--pa:${META[x].colors[0]};--pb:${META[x].colors[1]}`;
@@ -1061,7 +1184,7 @@ function openAdd() {
         }
       }
       const sc = sched();
-      $("[data-hint]", sheet).textContent =
+      let hint =
         mode === "sched"
           ? (schedType === "weekly" && days.length === 0 ? "Pick at least one day." :
             `${schedLabel(sc)}. Shows on Today when it's due and on the Week page that week.` +
@@ -1069,14 +1192,33 @@ function openAdd() {
           : mode === "every"
             ? `Shows up on the ${META[scope].tab} page every ${META[scope].unit}. Check it off each time.`
             : scope === "day" ? "Shows up today. If you don't finish, it carries over to tomorrow." : `Shows up on the ${META[scope].tab} page until you finish it.`;
+      if (cadenceChanged() && t.completions.length) hint += " Changing how often starts its streak and history over.";
+      $("[data-hint]", sheet).textContent = hint;
       $("[data-swatches]", sheet).innerHTML = HUES.map((h, i) => `<button class="swatch ${i === hue ? "on" : ""}" data-h="${i}" style="--sw:${h}" aria-label="Color ${i + 1}"></button>`).join("");
       go.disabled = !valid();
     };
     paint();
+
+    const finishSnooze = (until) => {
+      const undo = snoozeTask(live(), itemP, until);
+      save();
+      Feel.tap();
+      closeSheet();
+      renderAll();
+      toast(`Snoozed until ${dueLabel(until)}`, { label: "Undo", run: () => { undo(); save(); renderAll(); } });
+    };
+
     sheet.addEventListener("click", (e) => {
       const b = e.target.closest("button");
       if (!b) return;
       const d = b.dataset;
+      if (d.snooze) { finishSnooze(d.snooze); return; }
+      if ("unsnooze" in d) { unsnoozeTask(live()); save(); Feel.tap(); closeSheet(); renderAll(); toast("Back on your list"); return; }
+      if ("delete" in d) {
+        b.outerHTML = `<button class="cta danger" data-delete-confirm>${icon("trash")}Yes, delete “${esc(t.title.length > 22 ? t.title.slice(0, 21) + "…" : t.title)}”</button>`;
+        return;
+      }
+      if ("deleteConfirm" in d) { Feel.undo(); closeSheet(); deleteTask(live().id); return; }
       if (d.s) scope = d.s;
       else if (d.mode) mode = d.mode;
       else if (d.stype) { schedType = d.stype; $("[data-spick]", sheet).innerHTML = ""; }
@@ -1087,86 +1229,56 @@ function openAdd() {
       Feel.tap();
       paint();
     });
+    const dateIn = $("#snoozeDate", sheet);
+    if (dateIn) dateIn.addEventListener("change", () => { if (dateIn.value) finishSnooze(dateIn.value); });
+
     const submit = () => {
       const title = field.value.replace(/\s+/g, " ").trim();
       if (!valid()) return;
-      let dest = scope;
-      if (mode === "sched") {
-        const t = makeTask(title, "dated", true, hue);
-        t.start = keyOf(now());
-        t.sched = sched();
-        state.tasks.push(t);
-        dest = dueOn(t, now()) ? "day" : "week";
+      live();
+      let dest = mode === "sched" ? null : scope;
+      if (!t) {
+        if (mode === "sched") {
+          const n = makeTask(title, "dated", true, hue);
+          n.start = keyOf(now());
+          n.sched = sched();
+          state.tasks.push(n);
+          dest = dueOn(n, now()) ? "day" : n.sched.type === "weekly" ? "week" : n.sched.type === "monthly" ? "month" : "year";
+        } else {
+          state.tasks.push(makeTask(title, scope, mode === "every", hue));
+        }
       } else {
-        state.tasks.push(makeTask(title, scope, mode === "every", hue));
+        const changed = cadenceChanged();
+        t.title = title;
+        t.hue = hue;
+        if (changed) {
+          t.completions = [];
+          delete t.snooze;
+          delete t.hideUntil;
+          if (mode === "sched") {
+            t.scope = "dated"; t.repeats = true; t.sched = sched(); t.start = keyOf(now());
+          } else {
+            delete t.sched; t.scope = scope; t.repeats = mode === "every"; t.start = periodKey(scope);
+          }
+        }
+        dest = changed ? (mode === "sched" ? (dueOn(t, now()) ? "day" : null) : scope) : null;
       }
       save();
       Feel.tap();
       closeSheet();
-      goTo(dest, dest !== selected);
+      if (dest && dest !== selected) goTo(dest, true);
       renderAll();
+      if (t) toast("Saved");
     };
     field.addEventListener("input", () => {
       if (field.value.includes("\n")) { field.value = field.value.replace(/\n/g, ""); submit(); return; }
       go.disabled = !valid();
       field.style.height = "auto";
-      field.style.height = field.scrollHeight + "px";
+      field.style.height = field.scrollHeight + 3 + "px";
     });
     go.addEventListener("click", submit);
-    setTimeout(() => field.focus(), 60);
-  });
-}
-
-function openActions(key) {
-  const id = taskIdOf(key);
-  const t = state.tasks.find((x) => x.id === id);
-  if (!t) return;
-  const scope = colorScope(t);
-  openSheet(`
-    ${sheetHead(esc(t.title))}
-    <div class="menu">
-      <button class="menu-item" data-act="rename">${icon("pencil")}Rename</button>
-      <button class="menu-item red" data-act="delete">${icon("trash")}<span>Delete<span class="sub">${t.repeats ? "Removes every future one and its history." : "Removes it for good."}</span></span></button>
-    </div>`, scope, (sheet) => {
-    sheet.addEventListener("click", (e) => {
-      const b = e.target.closest("[data-act]");
-      if (!b) return;
-      if (b.dataset.act === "rename") openRename(id);
-      if (b.dataset.act === "delete") {
-        $(".menu", sheet).innerHTML = `<p class="note">Delete “${esc(t.title)}”? This can't be undone.</p>
-          <button class="cta danger" data-act="confirm">${icon("trash")}Delete task</button>
-          <button class="menu-item" data-close style="justify-content:center">Keep it</button>`;
-        $("[data-close]", sheet).onclick = closeSheet;
-      }
-      if (b.dataset.act === "confirm") {
-        Feel.undo();
-        closeSheet();
-        deleteTask(id);
-      }
-    });
-  });
-}
-
-function openRename(id) {
-  const t = state.tasks.find((x) => x.id === id);
-  if (!t) return;
-  openSheet(`
-    ${sheetHead("Rename")}
-    <textarea class="field" id="renameField" rows="1" enterkeyhint="done" maxlength="120" style="--hue:${HUES[t.hue % HUES.length]}"></textarea>
-    <button class="cta" id="renameGo">${icon("check")}Save</button>`, colorScope(t), (sheet) => {
-    const f = $("#renameField", sheet);
-    f.value = t.title;
-    const go = () => {
-      const v = f.value.replace(/\s+/g, " ").trim();
-      if (!v) return;
-      t.title = v;
-      save();
-      closeSheet();
-      renderAll();
-    };
-    f.addEventListener("input", () => { if (f.value.includes("\n")) { f.value = f.value.replace(/\n/g, ""); go(); } });
-    $("#renameGo", sheet).onclick = go;
-    setTimeout(() => { f.focus(); f.select(); }, 60);
+    if (!t) setTimeout(() => field.focus(), 60);
+    else requestAnimationFrame(() => { field.style.height = "auto"; field.style.height = field.scrollHeight + 3 + "px"; });
   });
 }
 
@@ -1393,11 +1505,17 @@ function boot() {
   let lastDay = keyOf(now());
   const refresh = () => {
     const d = keyOf(now());
-    if (d !== lastDay) { lastDay = d; state = load(); }
+    if (d !== lastDay) lastDay = d;
     renderAll();
   };
   setInterval(refresh, 30000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) { state = load(); refresh(); } });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    let raw = null;
+    try { raw = localStorage.getItem(STORE_KEY); } catch {}
+    if (raw && raw !== JSON.stringify(state)) state = load();
+    refresh();
+  });
 
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ("serviceWorker" in navigator && location.protocol === "https:") {
