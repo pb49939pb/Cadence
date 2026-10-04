@@ -411,12 +411,19 @@ function setScopeColors(s) {
   document.querySelector('meta[name="theme-color"]').setAttribute("content", "#07060D");
 }
 let toastTimer;
-function toast(msg) {
+function toast(msg, action) {
   const t = $("#toast");
   t.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.className = "toast-action";
+    b.textContent = action.label;
+    b.onclick = () => { t.hidden = true; action.run(); };
+    t.appendChild(b);
+  }
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 2600);
+  toastTimer = setTimeout(() => (t.hidden = true), action ? 5000 : 2600);
 }
 function flash(color) {
   const f = $("#flash");
@@ -644,21 +651,23 @@ function renderList(s, p) {
 }
 
 function createCard(t) {
-  const el = document.createElement("div");
-  el.className = "task";
-  el.dataset.id = t.id;
-  el.tabIndex = 0;
-  el.setAttribute("role", "button");
-  el.innerHTML = `
-    <div class="sweep"></div>
-    <div class="orb">${icon("check")}<i class="wave"></i></div>
-    <div class="task-body"><div class="task-title"></div><div class="badges"></div></div>
-    <div class="cheer"></div>`;
-  attachPress(el);
-  return el;
+  const row = document.createElement("div");
+  row.className = "swipe-row";
+  row.dataset.id = t.id;
+  row.innerHTML = `
+    <button class="swipe-del" tabindex="-1" aria-hidden="true">${icon("trash")}<span>Delete</span></button>
+    <div class="task" data-id="${t.id}" tabindex="0" role="button">
+      <div class="sweep"></div>
+      <div class="orb">${icon("check")}<i class="wave"></i></div>
+      <div class="task-body"><div class="task-title"></div><div class="badges"></div></div>
+      <div class="cheer"></div>
+    </div>`;
+  attachPress($(".task", row), row);
+  return row;
 }
 
-function updateCard(el, t, p) {
+function updateCard(row, t, p) {
+  const el = $(".task", row);
   const done = isDone(t, p);
   el.style.setProperty("--hue", HUES[t.hue % HUES.length]);
   el.classList.toggle("done", done);
@@ -674,28 +683,124 @@ function updateCard(el, t, p) {
 }
 const badge = (text, i, col) => `<span class="badge" style="--col:${col}">${icon(i)}${esc(text)}</span>`;
 
-/* Tap toggles, long-press (or right-click) opens actions. */
-function attachPress(el) {
-  let timer = null, startY = 0, long = false;
+/* Tap toggles, long-press (or right-click) opens actions, swipe left deletes. */
+const OPEN_X = -96;      // resting offset when the Delete button is showing
+let openRow = null;      // { row, close } for the one row swiped open
+
+function attachPress(el, row) {
+  const del = $(".swipe-del", row);
+  let timer = null, startX = 0, startY = 0, long = false;
+  let mode = null;       // null until we know if this is a tap, a scroll or a swipe
+  let base = 0, offset = 0, armed = false, swallowClick = false;
+
+  const setOffset = (x, animate) => {
+    offset = x;
+    el.style.transition = animate ? "transform .32s cubic-bezier(.2,1.1,.3,1)" : "none";
+    el.style.transform = x ? `translateX(${x}px)` : "";
+    del.style.transition = animate ? "opacity .32s" : "none";
+    del.style.opacity = Math.min(1, -x / 60);
+  };
+  const close = () => { setOffset(0, true); base = 0; if (openRow && openRow.row === row) openRow = null; };
+  const cancelHold = () => { clearTimeout(timer); el.classList.remove("pressing"); };
+
   el.addEventListener("pointerdown", (e) => {
-    long = false;
-    startY = e.clientY;
-    el.classList.add("pressing");
-    timer = setTimeout(() => {
-      long = true;
-      el.classList.remove("pressing");
-      Feel.tap();
-      openActions(el.dataset.id);
-    }, 520);
+    if (openRow && openRow.row !== row) openRow.close();
+    long = false; mode = null; armed = false;
+    startX = e.clientX; startY = e.clientY;
+    base = offset;
+    if (base === 0) {
+      el.classList.add("pressing");
+      timer = setTimeout(() => {
+        if (mode) return;
+        long = true;
+        el.classList.remove("pressing");
+        Feel.tap();
+        openActions(el.dataset.id);
+      }, 520);
+    }
   });
-  const cancel = () => { clearTimeout(timer); el.classList.remove("pressing"); };
-  el.addEventListener("pointermove", (e) => { if (Math.abs(e.clientY - startY) > 8) cancel(); });
-  el.addEventListener("pointerup", cancel);
-  el.addEventListener("pointercancel", cancel);
-  el.addEventListener("pointerleave", cancel);
-  el.addEventListener("contextmenu", (e) => { e.preventDefault(); cancel(); if (!long) openActions(el.dataset.id); long = true; });
-  el.addEventListener("click", () => { if (long) { long = false; return; } toggle(el.dataset.id, el); });
-  el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(el.dataset.id, el); } });
+  el.addEventListener("pointermove", (e) => {
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    if (!mode) {
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
+        mode = "swipe";
+        cancelHold();
+        try { el.setPointerCapture(e.pointerId); } catch {}
+      } else if (Math.abs(dy) > 8) {
+        mode = "scroll";
+        cancelHold();
+      }
+    }
+    if (mode !== "swipe") return;
+    let x = base + dx;
+    if (x > 0) x = x / 4; // resist swiping right
+    setOffset(x, false);
+    const nowArmed = -x > el.offsetWidth * 0.45;
+    if (nowArmed !== armed) {
+      armed = nowArmed;
+      row.classList.toggle("armed", armed);
+      if (armed) Feel.tap();
+    }
+  });
+  const end = () => {
+    cancelHold();
+    if (mode !== "swipe") return;
+    swallowClick = true;
+    row.classList.remove("armed");
+    if (armed) { deleteWithSwipe(el.dataset.id, row, el); return; }
+    if (offset < OPEN_X / 1.4) {
+      setOffset(OPEN_X, true);
+      base = OPEN_X;
+      openRow = { row, close };
+    } else close();
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", () => { cancelHold(); if (mode === "swipe") close(); });
+  el.addEventListener("pointerleave", () => { if (mode !== "swipe") cancelHold(); });
+  el.addEventListener("contextmenu", (e) => { e.preventDefault(); cancelHold(); if (!long && !mode) openActions(el.dataset.id); long = true; });
+  el.addEventListener("click", () => {
+    if (swallowClick) { swallowClick = false; return; }
+    if (long) { long = false; return; }
+    if (offset !== 0) { close(); return; }
+    toggle(el.dataset.id, el);
+  });
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(el.dataset.id, el); }
+    if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteWithSwipe(el.dataset.id, row, el); }
+  });
+  del.addEventListener("click", () => deleteWithSwipe(el.dataset.id, row, el));
+}
+
+/* Slide the card off, fold the row away, then delete with an Undo option. */
+function deleteWithSwipe(id, row, el) {
+  if (openRow && openRow.row === row) openRow = null;
+  Feel.undo();
+  el.style.transition = "transform .22s ease-in";
+  el.style.transform = `translateX(-${el.offsetWidth + 40}px)`;
+  const h = row.offsetHeight;
+  row.animate([{ height: h + "px", marginBottom: "0px" }, { height: "0px", marginBottom: "-10px" }], { duration: 260, delay: 160, easing: "ease-in-out", fill: "forwards" })
+    .finished.then(() => {
+      for (const s of SCOPES) cards[s].delete(id);
+      row.remove();
+      deleteTask(id);
+    });
+}
+
+function deleteTask(id) {
+  const i = state.tasks.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  const [removed] = state.tasks.splice(i, 1);
+  save();
+  renderAll();
+  toast(`Deleted “${removed.title.length > 28 ? removed.title.slice(0, 27) + "…" : removed.title}”`, {
+    label: "Undo",
+    run: () => {
+      state.tasks.splice(Math.min(i, state.tasks.length), 0, removed);
+      save();
+      Feel.tap();
+      renderAll();
+    },
+  });
 }
 
 /* ---------- Actions ---------- */
@@ -848,11 +953,9 @@ function openActions(id) {
         $("[data-close]", sheet).onclick = closeSheet;
       }
       if (b.dataset.act === "confirm") {
-        state.tasks = state.tasks.filter((x) => x.id !== id);
-        save();
         Feel.undo();
         closeSheet();
-        renderAll();
+        deleteTask(id);
       }
     });
   });

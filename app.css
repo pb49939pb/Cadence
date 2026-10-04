@@ -96,6 +96,11 @@ svg { display: block; }
 }
 .task.done { background: linear-gradient(90deg, color-mix(in srgb, var(--hue) 22%, transparent), var(--card) 75%); border-color: color-mix(in srgb, var(--hue) 50%, transparent); border-width: 1.5px; }
 .task.pressing { transform: scale(0.97); transition: transform 0.4s; }
+.swipe-row { position: relative; border-radius: 22px; }
+.swipe-del { position: absolute; inset: 0; border-radius: 22px; display: flex; align-items: center; justify-content: flex-end; gap: 7px; padding-right: 22px; color: #fff; font-size: 15px; font-weight: 900; background: linear-gradient(90deg, #ff2d55, #ff453a); opacity: 0; }
+.swipe-del svg { width: 19px; height: 19px; transition: transform 0.25s cubic-bezier(.34, 1.8, .64, 1); }
+.swipe-row.armed .swipe-del svg { transform: scale(1.35); }
+.swipe-row.armed .swipe-del { background: #ff2d55; }
 .orb { position: relative; flex: none; width: 34px; height: 34px; border-radius: 50%; border: 3px solid color-mix(in srgb, var(--hue) 75%, transparent); background: color-mix(in srgb, var(--hue) 13%, transparent); box-shadow: 0 0 6px color-mix(in srgb, var(--hue) 35%, transparent); display: grid; place-items: center; transition: background 0.25s, box-shadow 0.3s, border-color 0.25s; }
 .orb svg { width: 16px; height: 16px; color: var(--ink); transform: scale(0.1); opacity: 0; transition: transform 0.35s cubic-bezier(.34, 1.8, .64, 1), opacity 0.2s; }
 .task.done .orb { border-color: var(--hue); background: radial-gradient(circle at 30% 25%, #fff, var(--hue) 70%); box-shadow: 0 0 14px var(--hue); }
@@ -236,9 +241,10 @@ svg { display: block; }
 .switch.on::after { transform: translateX(20px); }
 .note { font-size: 13px; font-weight: 500; color: var(--dim); line-height: 1.45; margin: 0; }
 
-.toast { position: fixed; z-index: 60; left: 50%; bottom: calc(var(--safe-bottom) + 92px); translate: -50% 0; max-width: calc(100% - 32px); padding: 12px 18px; border-radius: 16px; background: rgba(30, 28, 44, .95); border: 1px solid rgba(255,255,255,.12); font-size: 14px; font-weight: 700; text-align: center; animation: fadein 0.2s ease; }
+.toast { position: fixed; z-index: 60; left: 50%; bottom: calc(var(--safe-bottom) + 92px); translate: -50% 0; max-width: calc(100% - 32px); display: flex; align-items: center; gap: 14px; white-space: nowrap; padding: 12px 18px; border-radius: 16px; background: rgba(30, 28, 44, .95); border: 1px solid rgba(255,255,255,.12); font-size: 14px; font-weight: 700; text-align: center; animation: fadein 0.2s ease; }
 
 @media (prefers-reduced-motion: reduce) {
   .blob, .empty svg { animation: none; }
   *, *::before, *::after { transition-duration: 0.01ms !important; }
 }
+.toast-action { flex: none; padding: 6px 12px; border-radius: 99px; font-size: 14px; font-weight: 900; color: var(--ink); background: linear-gradient(135deg, var(--c1), var(--c2)); }
