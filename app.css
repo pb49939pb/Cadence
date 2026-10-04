@@ -221,6 +221,16 @@ svg { display: block; }
 .pill svg { width: 16px; height: 16px; flex: none; }
 .pill:active { transform: scale(0.95); }
 .pill.on { color: var(--ink); background: linear-gradient(135deg, var(--pa), var(--pb)); }
+.pills.three { grid-template-columns: repeat(3, 1fr); }
+.pill.span2 { grid-column: span 2; }
+.sched-pick { margin-top: 12px; }
+.dow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.dow-btn { aspect-ratio: 1; border-radius: 50%; font-size: 15px; font-weight: 900; background: rgba(255,255,255,.08); transition: background 0.2s, color 0.2s, transform 0.25s cubic-bezier(.34, 1.8, .64, 1); }
+.dow-btn.on { color: var(--ink); background: linear-gradient(135deg, var(--a), var(--b)); transform: scale(1.06); box-shadow: 0 0 10px color-mix(in srgb, var(--a) 60%, transparent); }
+.mdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.mday { height: 38px; border-radius: 12px; font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; background: rgba(255,255,255,.07); transition: background 0.2s, color 0.2s; }
+.mday.on { color: var(--ink); background: linear-gradient(135deg, var(--a), var(--b)); }
+.date-field { font-size: 18px; padding: 14px 16px; color-scheme: dark; }
 .hint { margin: 10px 0 0; font-size: 13px; font-weight: 500; color: var(--dim); }
 .swatches { display: grid; grid-template-columns: repeat(8, 1fr); justify-items: center; }
 .swatch { width: 30px; height: 30px; border-radius: 50%; background: var(--sw); transition: transform 0.3s cubic-bezier(.34, 1.8, .64, 1), box-shadow 0.3s; }

@@ -161,9 +161,80 @@ function visible(scope, p) {
     return effective(t) === p;
   });
 }
+/* ---------- Scheduled tasks ("every Saturday", "the 4th of every month") ----------
+   Stored with scope "dated" and sched = {type:"weekly", days:[6]} | {type:"monthly", day:4}
+   | {type:"yearly", month:2, day:15}. Each due date is its own check-off (completion p = that day). */
+const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const daysIn = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
+
+function dueOn(t, d) {
+  const sc = t.sched;
+  if (sc.type === "weekly") return sc.days.includes(d.getDay());
+  if (sc.type === "monthly") return d.getDate() === Math.min(sc.day, daysIn(d));
+  return d.getMonth() === sc.month && d.getDate() === Math.min(sc.day, daysIn(d));
+}
+/** Most recent due date on or before `key` (and not before the task existed). */
+function lastDue(t, key) {
+  let d = parseKey(key);
+  for (let i = 0; i < 370; i++, d = addDays(d, -1)) {
+    const k = keyOf(d);
+    if (k < t.start) return null;
+    if (dueOn(t, d)) return k;
+  }
+  return null;
+}
+function dueBetween(t, from, to) { // [from, to)
+  const out = [];
+  for (let d = new Date(from); d < to; d = addDays(d, 1)) {
+    const k = keyOf(d);
+    if (k >= t.start && dueOn(t, d)) out.push(k);
+  }
+  return out;
+}
+function schedLabel(sc) {
+  if (sc.type === "weekly") {
+    if (sc.days.length === 7) return "Every day";
+    const sorted = [...sc.days].sort((a, b) => a - b);
+    if (sorted.join() === "1,2,3,4,5") return "Weekdays";
+    if (sorted.join() === "0,6") return "Weekends";
+    return "Every " + sorted.map((i) => (sc.days.length === 1 ? DOW[i] : DOW[i].slice(0, 3))).join(", ");
+  }
+  if (sc.type === "monthly") return `The ${ordinal(sc.day)} of every month`;
+  return "Every " + new Date(2000, sc.month, sc.day).toLocaleDateString(undefined, { month: "long", day: "numeric" });
+}
+const dueLabel = (k) => parseKey(k).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+
+/** Rows for scheduled tasks on the Today or Week page. */
+function datedItems(scope, p) {
+  const today = keyOf(now());
+  const out = [];
+  for (const t of state.tasks) {
+    if (!t.sched) continue;
+    if (scope === "day") {
+      const k = lastDue(t, today);
+      if (k && (k === today || !isDone(t, k))) out.push({ t, p: k, key: `${t.id}@${k}` });
+    } else if (scope === "week") {
+      const ws = parseKey(p);
+      const inWeek = dueBetween(t, ws, addPeriods("week", ws, 1));
+      const prev = lastDue(t, keyOf(addDays(ws, -1)));
+      // An overdue one carries into this week until it's done or the next due date arrives.
+      if (prev && !isDone(t, prev) && !inWeek.some((k) => k <= today)) out.push({ t, p: prev, key: `${t.id}@${prev}` });
+      for (const k of inWeek) out.push({ t, p: k, key: `${t.id}@${k}` });
+    }
+  }
+  return out;
+}
+function items(scope, p = periodKey(scope)) {
+  return visible(scope, p).map((t) => ({ t, p, key: t.id })).concat(datedItems(scope, p));
+}
+const taskIdOf = (key) => key.split("@")[0];
+const colorScope = (t) => (t.sched ? "day" : t.scope);
+
 function progress(scope, p = periodKey(scope)) {
-  const v = visible(scope, p);
-  const done = v.filter((t) => isDone(t, p)).length;
+  const v = items(scope, p);
+  const done = v.filter((i) => isDone(i.t, i.p)).length;
   return { done, total: v.length, frac: v.length ? done / v.length : 0 };
 }
 function pastProgress(scope, p) {
@@ -178,6 +249,16 @@ function pastProgress(scope, p) {
     } else if (effective(t) === p) {
       total++;
       if (t.completions.length) done++;
+    }
+  }
+  if (scope === "day" || scope === "week") {
+    const from = parseKey(p);
+    for (const t of state.tasks) {
+      if (!t.sched || t.createdAt >= end) continue;
+      for (const k of dueBetween(t, from, new Date(end))) {
+        total++;
+        if (isDone(t, k)) done++;
+      }
     }
   }
   return { done, total, frac: total ? done / total : 0 };
@@ -201,6 +282,16 @@ function dayStreak() {
   return streak;
 }
 function taskStreak(t) {
+  if (t.sched) {
+    const today = keyOf(now());
+    let k = lastDue(t, today), streak = 0;
+    if (k === today && !isDone(t, k)) k = lastDue(t, keyOf(addDays(parseKey(k), -1)));
+    while (k && isDone(t, k) && streak < 400) {
+      streak++;
+      k = lastDue(t, keyOf(addDays(parseKey(k), -1)));
+    }
+    return streak;
+  }
   if (!t.repeats) return 0;
   const done = new Set(t.completions.map((c) => c.p));
   let streak = done.has(periodKey(t.scope)) ? 1 : 0;
@@ -219,7 +310,7 @@ function todayByHour() {
     if (keyOf(d) !== today) continue;
     const h = d.getHours();
     counts[h] = counts[h] || { day: 0, week: 0, month: 0, year: 0 };
-    counts[h][t.scope]++;
+    counts[h][colorScope(t)]++;
   }
   return counts;
 }
@@ -235,7 +326,7 @@ function spread(scope) {
     }
   }
   for (const t of state.tasks) {
-    if (t.scope !== scope) continue;
+    if (t.scope !== scope && !(t.sched && scope === "week")) continue;
     for (const c of t.completions) {
       const d = new Date(c.at);
       if (d < start || d >= end) continue;
@@ -608,55 +699,56 @@ function setText(el, text) {
 }
 
 function ordered(s, p) {
-  return visible(s, p).sort((a, b) => {
-    const ad = isDone(a, p) && !settling.has(a.id), bd = isDone(b, p) && !settling.has(b.id);
+  return items(s, p).sort((a, b) => {
+    const ad = isDone(a.t, a.p) && !settling.has(a.key), bd = isDone(b.t, b.p) && !settling.has(b.key);
     if (ad !== bd) return ad ? 1 : -1;
-    return a.createdAt - b.createdAt;
+    if (a.p !== b.p) return a.p < b.p ? -1 : 1;
+    return a.t.createdAt - b.t.createdAt;
   });
 }
 
 function renderList(s, p) {
   const page = pages[s];
   const list = $("[data-list]", page);
-  const items = ordered(s, p);
-  $("[data-empty]", page).hidden = items.length > 0;
+  const rows = ordered(s, p);
+  $("[data-empty]", page).hidden = rows.length > 0;
 
   const before = new Map();
   for (const el of list.children) before.set(el.dataset.id, el.getBoundingClientRect().top);
 
-  const keep = new Set(items.map((t) => t.id));
-  for (const [id, el] of cards[s]) {
-    if (!keep.has(id)) {
-      cards[s].delete(id);
+  const keep = new Set(rows.map((r) => r.key));
+  for (const [key, el] of cards[s]) {
+    if (!keep.has(key)) {
+      cards[s].delete(key);
       el.animate([{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.6)" }], { duration: 250, easing: "ease-in" })
         .finished.then(() => el.remove(), () => el.remove());
     }
   }
-  for (const t of items) {
-    let el = cards[s].get(t.id);
-    if (!el) { el = createCard(t); cards[s].set(t.id, el); }
-    updateCard(el, t, p);
+  for (const r of rows) {
+    let el = cards[s].get(r.key);
+    if (!el) { el = createCard(r.key); cards[s].set(r.key, el); }
+    updateCard(el, r, s, p);
     list.appendChild(el);
   }
-  for (const t of items) {
-    const el = cards[s].get(t.id);
+  for (const r of rows) {
+    const el = cards[s].get(r.key);
     const top = el.getBoundingClientRect().top;
-    if (!before.has(t.id)) {
+    if (!before.has(r.key)) {
       el.animate([{ opacity: 0, transform: "scale(.85)" }, { opacity: 1, transform: "none" }], { duration: 380, easing: "cubic-bezier(.34,1.5,.64,1)" });
     } else {
-      const dy = before.get(t.id) - top;
+      const dy = before.get(r.key) - top;
       if (Math.abs(dy) > 1) el.animate([{ transform: `translateY(${dy}px)` }, { transform: "none" }], { duration: 520, easing: "cubic-bezier(.3,1.25,.5,1)" });
     }
   }
 }
 
-function createCard(t) {
+function createCard(key) {
   const row = document.createElement("div");
   row.className = "swipe-row";
-  row.dataset.id = t.id;
+  row.dataset.id = key;
   row.innerHTML = `
     <button class="swipe-del" tabindex="-1" aria-hidden="true">${icon("trash")}<span>Delete</span></button>
-    <div class="task" data-id="${t.id}" tabindex="0" role="button">
+    <div class="task" data-id="${esc(key)}" tabindex="0" role="button">
       <div class="sweep"></div>
       <div class="orb">${icon("check")}<i class="wave"></i></div>
       <div class="task-body"><div class="task-title"></div><div class="badges"></div></div>
@@ -666,19 +758,28 @@ function createCard(t) {
   return row;
 }
 
-function updateCard(row, t, p) {
+function updateCard(row, item, s, p) {
+  const { t } = item;
   const el = $(".task", row);
-  const done = isDone(t, p);
+  const done = isDone(t, item.p);
   el.style.setProperty("--hue", HUES[t.hue % HUES.length]);
   el.classList.toggle("done", done);
   el.setAttribute("aria-pressed", String(done));
   el.setAttribute("aria-label", `${t.title}${done ? ", done" : ""}`);
   $(".task-title", el).textContent = t.title;
   const badges = [];
-  if (t.repeats) badges.push(badge(META[t.scope].cadence, "repeat", META[t.scope].colors[0]));
   const st = taskStreak(t);
-  if (st > 1) badges.push(badge(`${st} ${META[t.scope].unit} streak`, "flame", "#FF8A00"));
-  if (isCarried(t, p)) badges.push(badge("Carried over", "carry", "#FFD60A"));
+  if (t.sched) {
+    const today = keyOf(now());
+    badges.push(badge(schedLabel(t.sched), "calendar", META.week.colors[0]));
+    if (item.p < p || (s === "day" && item.p < today)) badges.push(badge(`Overdue · ${dueLabel(item.p)}`, "carry", "#FFD60A"));
+    else if (s === "week") badges.push(badge(item.p === today ? "Today" : dueLabel(item.p), "sun", item.p === today ? META.day.colors[0] : "rgba(255,255,255,.75)"));
+    if (st > 1) badges.push(badge(`${st} in a row`, "flame", "#FF8A00"));
+  } else {
+    if (t.repeats) badges.push(badge(META[t.scope].cadence, "repeat", META[t.scope].colors[0]));
+    if (st > 1) badges.push(badge(`${st} ${META[t.scope].unit} streak`, "flame", "#FF8A00"));
+    if (isCarried(t, p)) badges.push(badge("Carried over", "carry", "#FFD60A"));
+  }
   $(".badges", el).innerHTML = badges.join("");
 }
 const badge = (text, i, col) => `<span class="badge" style="--col:${col}">${icon(i)}${esc(text)}</span>`;
@@ -782,11 +883,12 @@ function deleteWithSwipe(id, row, el) {
     .finished.then(() => {
       for (const s of SCOPES) cards[s].delete(id);
       row.remove();
-      deleteTask(id);
+      deleteTask(taskIdOf(id));
     });
 }
 
-function deleteTask(id) {
+function deleteTask(key) {
+  const id = taskIdOf(key);
   const i = state.tasks.findIndex((x) => x.id === id);
   if (i < 0) return;
   const [removed] = state.tasks.splice(i, 1);
@@ -804,10 +906,12 @@ function deleteTask(id) {
 }
 
 /* ---------- Actions ---------- */
-function toggle(id, el) {
-  const t = state.tasks.find((x) => x.id === id);
+function toggle(key, el) {
+  const t = state.tasks.find((x) => x.id === taskIdOf(key));
   if (!t) return;
-  const s = t.scope, p = periodKey(s);
+  const page = el.closest(".page");
+  const s = page ? page.dataset.scope : colorScope(t);
+  const p = key.includes("@") ? key.split("@")[1] : periodKey(t.scope);
   if (isDone(t, p)) {
     t.completions = t.repeats ? t.completions.filter((c) => c.p !== p) : [];
     Feel.undo();
@@ -815,7 +919,7 @@ function toggle(id, el) {
     renderAll();
     return;
   }
-  const pr = progress(s, p);
+  const pr = progress(s);
   const finishes = pr.total - pr.done === 1;
   t.completions.push({ p, at: Date.now() });
   save();
@@ -838,9 +942,9 @@ function toggle(id, el) {
     { opacity: 0, transform: "translateY(-26px)" },
   ], { duration: 1200, easing: "ease-out" });
 
-  settling.add(id);
+  settling.add(key);
   renderAll();
-  setTimeout(() => { settling.delete(id); renderPage(s); }, 950);
+  setTimeout(() => { settling.delete(key); renderAll(); }, 950);
 
   if (finishes) setTimeout(() => celebrate(s), 400);
 }
@@ -882,48 +986,97 @@ addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 const sheetHead = (title) => `<div class="sheet-head"><h2>${title}</h2><button class="close" data-close aria-label="Close">${icon("close")}</button></div>`;
 
 function openAdd() {
-  let scope = selected, repeats = false, hue = Math.floor(Math.random() * HUES.length);
+  const today = now();
+  let scope = selected, mode = "once", hue = Math.floor(Math.random() * HUES.length);
+  let schedType = "weekly", days = [today.getDay()], mday = today.getDate();
+  let yearly = keyOf(today);
   openSheet(`
     ${sheetHead("New task")}
     <textarea class="field" id="newTitle" rows="1" placeholder="What needs doing?" enterkeyhint="done" maxlength="120"></textarea>
-    <div><div class="section-label">When</div><div class="pills" data-when></div></div>
     <div><div class="section-label">How often</div><div class="pills" data-often></div><p class="hint" data-hint></p></div>
+    <div data-when-wrap><div class="section-label">When</div><div class="pills" data-when></div></div>
+    <div data-sched-wrap hidden><div class="section-label">Repeats</div><div class="pills three" data-stype></div><div class="sched-pick" data-spick></div></div>
     <div><div class="section-label">Color</div><div class="swatches" data-swatches></div></div>
     <button class="cta" id="addGo" disabled>${icon("plus")}Add task</button>`, scope, (sheet) => {
     const field = $("#newTitle", sheet), go = $("#addGo", sheet);
+    const sched = () => schedType === "weekly" ? { type: "weekly", days: [...days].sort() }
+      : schedType === "monthly" ? { type: "monthly", day: mday }
+      : { type: "yearly", month: parseKey(yearly).getMonth(), day: parseKey(yearly).getDate() };
+    const valid = () => field.value.trim() && !(mode === "sched" && schedType === "weekly" && days.length === 0);
     const paint = () => {
-      sheet.style.cssText = scopeVars(scope) + `;--hue:${HUES[hue]}`;
-      $("[data-when]", sheet).innerHTML = SCOPES.map((x) =>
-        `<button class="pill ${x === scope ? "on" : ""}" data-s="${x}" style="--pa:${META[x].colors[0]};--pb:${META[x].colors[1]}">${icon(META[x].icon)}${repeats ? META[x].every : META[x].once}</button>`).join("");
+      const look = mode === "sched" ? "week" : scope;
+      const pv = (x) => `--pa:${META[x].colors[0]};--pb:${META[x].colors[1]}`;
+      sheet.style.cssText = scopeVars(look) + `;--hue:${HUES[hue]}`;
       $("[data-often]", sheet).innerHTML =
-        `<button class="pill ${!repeats ? "on" : ""}" data-r="0" style="--pa:${META[scope].colors[0]};--pb:${META[scope].colors[1]}">${icon("check")}Just once</button>
-         <button class="pill ${repeats ? "on" : ""}" data-r="1" style="--pa:${META[scope].colors[0]};--pb:${META[scope].colors[1]}">${icon("repeat")}${META[scope].every}</button>`;
-      $("[data-hint]", sheet).textContent = repeats
-        ? `Shows up on the ${META[scope].tab} page every ${META[scope].unit}. Check it off each time.`
-        : scope === "day" ? "Shows up today. If you don't finish, it carries over to tomorrow." : `Shows up on the ${META[scope].tab} page until you finish it.`;
+        `<button class="pill ${mode === "once" ? "on" : ""}" data-mode="once" style="${pv(look)}">${icon("check")}Just once</button>
+         <button class="pill ${mode === "every" ? "on" : ""}" data-mode="every" style="${pv(look)}">${icon("repeat")}${mode === "sched" ? "Every day/week…" : META[scope].every}</button>
+         <button class="pill span2 ${mode === "sched" ? "on" : ""}" data-mode="sched" style="${pv(look)}">${icon("calendar")}On specific days</button>`;
+      $("[data-when-wrap]", sheet).hidden = mode === "sched";
+      $("[data-sched-wrap]", sheet).hidden = mode !== "sched";
+      $("[data-when]", sheet).innerHTML = SCOPES.map((x) =>
+        `<button class="pill ${x === scope ? "on" : ""}" data-s="${x}" style="${pv(x)}">${icon(META[x].icon)}${mode === "every" ? META[x].every : META[x].once}</button>`).join("");
+      if (mode === "sched") {
+        $("[data-stype]", sheet).innerHTML = [["weekly", "Weekly"], ["monthly", "Monthly"], ["yearly", "Yearly"]].map(([k, l]) =>
+          `<button class="pill ${schedType === k ? "on" : ""}" data-stype="${k}" style="${pv("week")}">${l}</button>`).join("");
+        const pick = $("[data-spick]", sheet);
+        if (schedType === "weekly") {
+          pick.innerHTML = `<div class="dow">${DOW.map((d, i) => `<button class="dow-btn ${days.includes(i) ? "on" : ""}" data-dow="${i}" aria-label="${d}" aria-pressed="${days.includes(i)}">${d[0]}</button>`).join("")}</div>`;
+        } else if (schedType === "monthly") {
+          pick.innerHTML = `<div class="mdays">${Array.from({ length: 31 }, (_, i) => `<button class="mday ${mday === i + 1 ? "on" : ""}" data-mday="${i + 1}">${i + 1}</button>`).join("")}</div>`;
+        } else if (!$("#yearDate", pick)) {
+          pick.innerHTML = `<input type="date" class="field date-field" id="yearDate" value="${yearly}" aria-label="Date each year">`;
+          $("#yearDate", pick).addEventListener("change", (e) => { if (e.target.value) { yearly = e.target.value; paint(); } });
+        }
+      }
+      const sc = sched();
+      $("[data-hint]", sheet).textContent =
+        mode === "sched"
+          ? (schedType === "weekly" && days.length === 0 ? "Pick at least one day." :
+            `${schedLabel(sc)}. Shows on Today when it's due and on the Week page that week.` +
+            (schedType !== "weekly" && sc.day > 28 ? " In shorter months it's due on the last day." : ""))
+          : mode === "every"
+            ? `Shows up on the ${META[scope].tab} page every ${META[scope].unit}. Check it off each time.`
+            : scope === "day" ? "Shows up today. If you don't finish, it carries over to tomorrow." : `Shows up on the ${META[scope].tab} page until you finish it.`;
       $("[data-swatches]", sheet).innerHTML = HUES.map((h, i) => `<button class="swatch ${i === hue ? "on" : ""}" data-h="${i}" style="--sw:${h}" aria-label="Color ${i + 1}"></button>`).join("");
+      go.disabled = !valid();
     };
     paint();
     sheet.addEventListener("click", (e) => {
       const b = e.target.closest("button");
       if (!b) return;
-      if (b.dataset.s) { scope = b.dataset.s; Feel.tap(); paint(); }
-      else if (b.dataset.r) { repeats = b.dataset.r === "1"; Feel.tap(); paint(); }
-      else if (b.dataset.h) { hue = Number(b.dataset.h); Feel.tap(); paint(); }
+      const d = b.dataset;
+      if (d.s) scope = d.s;
+      else if (d.mode) mode = d.mode;
+      else if (d.stype) { schedType = d.stype; $("[data-spick]", sheet).innerHTML = ""; }
+      else if (d.dow) { const i = Number(d.dow); days = days.includes(i) ? days.filter((x) => x !== i) : [...days, i]; }
+      else if (d.mday) mday = Number(d.mday);
+      else if (d.h) hue = Number(d.h);
+      else return;
+      Feel.tap();
+      paint();
     });
     const submit = () => {
       const title = field.value.replace(/\s+/g, " ").trim();
-      if (!title) return;
-      state.tasks.push(makeTask(title, scope, repeats, hue));
+      if (!valid()) return;
+      let dest = scope;
+      if (mode === "sched") {
+        const t = makeTask(title, "dated", true, hue);
+        t.start = keyOf(now());
+        t.sched = sched();
+        state.tasks.push(t);
+        dest = dueOn(t, now()) ? "day" : "week";
+      } else {
+        state.tasks.push(makeTask(title, scope, mode === "every", hue));
+      }
       save();
       Feel.tap();
       closeSheet();
-      goTo(scope, scope !== selected);
+      goTo(dest, dest !== selected);
       renderAll();
     };
     field.addEventListener("input", () => {
       if (field.value.includes("\n")) { field.value = field.value.replace(/\n/g, ""); submit(); return; }
-      go.disabled = !field.value.trim();
+      go.disabled = !valid();
       field.style.height = "auto";
       field.style.height = field.scrollHeight + "px";
     });
@@ -932,15 +1085,16 @@ function openAdd() {
   });
 }
 
-function openActions(id) {
+function openActions(key) {
+  const id = taskIdOf(key);
   const t = state.tasks.find((x) => x.id === id);
   if (!t) return;
-  const scope = t.scope;
+  const scope = colorScope(t);
   openSheet(`
     ${sheetHead(esc(t.title))}
     <div class="menu">
       <button class="menu-item" data-act="rename">${icon("pencil")}Rename</button>
-      <button class="menu-item red" data-act="delete">${icon("trash")}<span>Delete<span class="sub">${t.repeats ? "Removes it and its history." : "Removes it for good."}</span></span></button>
+      <button class="menu-item red" data-act="delete">${icon("trash")}<span>Delete<span class="sub">${t.repeats ? "Removes every future one and its history." : "Removes it for good."}</span></span></button>
     </div>`, scope, (sheet) => {
     sheet.addEventListener("click", (e) => {
       const b = e.target.closest("[data-act]");
@@ -967,7 +1121,7 @@ function openRename(id) {
   openSheet(`
     ${sheetHead("Rename")}
     <textarea class="field" id="renameField" rows="1" enterkeyhint="done" maxlength="120" style="--hue:${HUES[t.hue % HUES.length]}"></textarea>
-    <button class="cta" id="renameGo">${icon("check")}Save</button>`, t.scope, (sheet) => {
+    <button class="cta" id="renameGo">${icon("check")}Save</button>`, colorScope(t), (sheet) => {
     const f = $("#renameField", sheet);
     f.value = t.title;
     const go = () => {
