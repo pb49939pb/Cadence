@@ -17,19 +17,6 @@ const HUES = ["#FF2D87", "#FF8A00", "#FFD60A", "#B6FF3B", "#00F5A0", "#00E5FF", 
 const CHEERS = ["Nice!", "Boom!", "Crushed it", "Yes!", "Done!", "Let's go", "Smooth", "Nailed it", "Easy", "+1"];
 const WEEK_START = 0; // Sunday, like the iPhone calendar in the US
 
-/** Tasks added the first time the app opens on a device. */
-const STARTER = [
-  "Empty Dishwasher",
-  "Clean Out Meal Prep From Fridge",
-  "Mow Lawns",
-  "Water change: L50 tank",
-  "Water change: R50 tank",
-  "Water change: 13.5 tank",
-  "Water change: 150 tank",
-  "Create shelf for battery in 150 stand",
-  "Get trim paint from Home Depot",
-];
-
 /* ---------- Icons (inline SVG, stroke = currentColor) ---------- */
 const ICON = {
   sun: '<circle cx="12" cy="12" r="4.2" fill="currentColor" stroke="none"/><path d="M12 2.5v2.3M12 19.2v2.3M2.5 12h2.3M19.2 12h2.3M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/>',
@@ -117,7 +104,7 @@ const now = () => (clockOverride ? new Date(clockOverride) : new Date());
 let state = load();
 
 function blankState() {
-  return { tasks: [], settings: { sound: true, haptics: true }, seeded: false };
+  return { tasks: [], settings: { sound: true, haptics: true } };
 }
 function load() {
   try {
@@ -129,27 +116,154 @@ function load() {
     return blankState();
   }
 }
-function save() {
+function saveLocal() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch {
     toast("Couldn't save. Your phone may be out of storage.");
   }
 }
+function save() {
+  saveLocal();
+  pushToCloud();
+}
+
+/* ---------- Cloud sync (Firebase) ----------
+   The local copy keeps the app instant and usable offline; Firestore is the source of truth once signed in.
+   save() diffs tasks against what the cloud last had and writes only what changed. */
+const OWNER_KEY = "cadence.owner";        // which account the local copy belongs to
+let cloud = null, user = null, unsubTasks = null, unsubSettings = null;
+let cloudTasks = new Map();               // id -> JSON of the cloud's version
+let cloudSettings = "";
+
+const clean = (o) => JSON.parse(JSON.stringify(o)); // Firestore rejects undefined fields
+
+function pushToCloud() {
+  if (!cloud || !user) return;
+  const sets = [], seen = new Set();
+  for (const t of state.tasks) {
+    seen.add(t.id);
+    const j = JSON.stringify(t);
+    if (cloudTasks.get(t.id) !== j) { sets.push(clean(t)); cloudTasks.set(t.id, j); }
+  }
+  const deletes = [...cloudTasks.keys()].filter((id) => !seen.has(id));
+  deletes.forEach((id) => cloudTasks.delete(id));
+  const sj = JSON.stringify(state.settings);
+  const settings = sj !== cloudSettings ? (cloudSettings = sj, clean(state.settings)) : null;
+  if (!sets.length && !deletes.length && !settings) return;
+  setSync("saving");
+  cloud.commit(user.uid, sets, deletes, settings)
+    .then(() => setSync("ok"))
+    .catch((e) => { setSync("error"); console.warn("Sync failed", e); toast("Couldn't sync that change. It will retry when you're online."); });
+}
+
+function setSync(s) { document.documentElement.dataset.sync = s; }
+
+/** First sign-in on a device: upload tasks that were only saved here (the pre-sync app). */
+async function migrateLocal(uid) {
+  let owner = null;
+  try { owner = localStorage.getItem(OWNER_KEY); } catch {}
+  if (owner) return; // local copy already belongs to an account
+  const local = load().tasks;
+  if (local.length) {
+    const existing = await cloud.fetchTasks(uid);
+    const ids = new Set(existing.map((t) => t.id));
+    const same = new Set(existing.map((t) => `${t.scope}|${t.title}`));
+    const fresh = local.filter((t) => !ids.has(t.id) && !(t.completions.length === 0 && same.has(`${t.scope}|${t.title}`)));
+    if (fresh.length) {
+      await cloud.commit(uid, fresh.map(clean), [], existing.length ? null : clean(load().settings));
+      toast(`Moved ${fresh.length} task${fresh.length === 1 ? "" : "s"} from this device to your account`);
+    }
+  }
+  try { localStorage.setItem(OWNER_KEY, uid); } catch {}
+}
+
+function startCloud() {
+  cloud = window.CadenceCloud;
+  cloud.onUser(async (u) => {
+    if (unsubTasks) { unsubTasks(); unsubTasks = null; }
+    if (unsubSettings) { unsubSettings(); unsubSettings = null; }
+    user = u;
+    if (!u) { cloudTasks = new Map(); cloudSettings = ""; setSync("off"); openAuth(); return; }
+    if (authOpen) closeSheet();
+    setSync("saving");
+    try { await migrateLocal(u.uid); } catch (e) { console.warn("Migration failed", e); toast("Couldn't move this device's tasks yet. Reopen the app to try again."); }
+    unsubSettings = cloud.watchSettings(u.uid, (s) => {
+      if (!s) return;
+      cloudSettings = JSON.stringify(s);
+      state.settings = { ...blankState().settings, ...s };
+      saveLocal();
+    });
+    unsubTasks = cloud.watchTasks(u.uid, (tasks, meta) => {
+      cloudTasks = new Map(tasks.map((t) => [t.id, JSON.stringify(t)]));
+      state.tasks = tasks.sort((a, b) => a.createdAt - b.createdAt);
+      saveLocal();
+      if (!meta.hasPendingWrites) setSync(meta.fromCache ? "offline" : "ok");
+      renderAll();
+    }, (e) => { setSync("error"); console.warn("Listen failed", e); });
+  });
+}
+
+/* ---------- Sign-in ---------- */
+let authOpen = false;
+const AUTH_ERRORS = {
+  "auth/invalid-credential": "That email and password don't match.",
+  "auth/wrong-password": "That email and password don't match.",
+  "auth/user-not-found": "No account with that email. Tap Create account.",
+  "auth/email-already-in-use": "That email already has an account. Tap Sign in.",
+  "auth/weak-password": "Use at least 6 characters for the password.",
+  "auth/invalid-email": "That doesn't look like an email address.",
+  "auth/popup-closed-by-user": "Sign-in was closed before it finished.",
+  "auth/network-request-failed": "No connection. Check your internet and try again.",
+  "auth/too-many-requests": "Too many tries. Wait a minute and try again.",
+  "auth/operation-not-allowed": "This sign-in method isn't turned on in Firebase yet.",
+  "auth/unauthorized-domain": "This web address isn't allowed to sign in yet (Firebase → Authentication → Settings → Authorized domains).",
+};
+const authMessage = (e) => AUTH_ERRORS[e && e.code] || (e && e.message) || "Something went wrong. Try again.";
+
+function openAuth(message) {
+  authOpen = true;
+  openSheet(`
+    <div class="sheet-head"><h2>Sign in</h2></div>
+    <p class="note auth-lede">Sign in to keep your tasks in sync between your iPhone and Mac. Tasks already on this device come with you.</p>
+    <button class="google-btn" data-google>${GOOGLE_LOGO}Continue with Google</button>
+    <div class="or"><span>or use email</span></div>
+    <form class="auth-form" novalidate>
+      <input class="field auth-field" id="authEmail" type="email" autocomplete="email" inputmode="email" placeholder="Email" required>
+      <input class="field auth-field" id="authPass" type="password" autocomplete="current-password" placeholder="Password" required minlength="6">
+      <p class="auth-error" role="alert" ${message ? "" : "hidden"}>${message ? esc(message) : ""}</p>
+      <button class="cta" type="submit" data-mode="in">Sign in</button>
+      <div class="auth-links"><button type="button" data-signup>Create account</button><button type="button" data-reset>Forgot password?</button></div>
+    </form>`, "day", (sheet) => {
+    $("#backdrop").onclick = null; // signing in isn't optional
+    const err = $(".auth-error", sheet), email = $("#authEmail", sheet), pass = $("#authPass", sheet);
+    const show = (m, ok) => { err.hidden = !m; err.textContent = m || ""; err.classList.toggle("ok", !!ok); };
+    const busy = (on) => sheet.querySelectorAll("button").forEach((b) => (b.disabled = on));
+    const run = async (fn) => {
+      show("");
+      busy(true);
+      try { await fn(); } catch (e) { show(authMessage(e)); } finally { busy(false); }
+    };
+    $("[data-google]", sheet).onclick = () => run(() => cloud.google());
+    $(".auth-form", sheet).onsubmit = (e) => { e.preventDefault(); run(() => cloud.emailSignIn(email.value.trim(), pass.value)); };
+    $("[data-signup]", sheet).onclick = () => {
+      if (!email.value.trim() || pass.value.length < 6) { show("Enter your email and a password of 6+ characters, then tap Create account."); return; }
+      run(() => cloud.emailSignUp(email.value.trim(), pass.value));
+    };
+    $("[data-reset]", sheet).onclick = () => {
+      if (!email.value.trim()) { show("Enter your email first."); return; }
+      run(async () => { await cloud.resetPassword(email.value.trim()); show("Check your email for a reset link.", true); });
+    };
+    return () => { authOpen = false; };
+  });
+}
+const GOOGLE_LOGO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.5 12.3c0-.8-.1-1.5-.2-2.3H12v4.3h5.9a5 5 0 0 1-2.2 3.3v2.7h3.6c2-1.9 3.2-4.7 3.2-8z"/><path fill="#34A853" d="M12 23c3 0 5.5-1 7.3-2.7l-3.6-2.7c-1 .7-2.2 1.1-3.7 1.1-2.9 0-5.3-1.9-6.2-4.5H2.1v2.8A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.8 14.2a6.6 6.6 0 0 1 0-4.3V7.1H2.1a11 11 0 0 0 0 9.9z"/><path fill="#EA4335" d="M12 5.4c1.6 0 3.1.6 4.2 1.7l3.2-3.2A11 11 0 0 0 2.1 7.1l3.7 2.8C6.7 7.3 9.1 5.4 12 5.4z"/></svg>';
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
 function makeTask(title, scope, repeats, hue) {
   return { id: uid(), title, scope, repeats, start: periodKey(scope), createdAt: Date.now(), hue, completions: [] };
 }
 
-function seedStarter() {
-  if (state.seeded) return;
-  state.seeded = true;
-  if (state.tasks.length === 0) {
-    state.tasks = STARTER.map((t, i) => ({ ...makeTask(t, "day", false, i % HUES.length), createdAt: Date.now() + i }));
-  }
-  save();
-}
 
 /* ---------- Stats ---------- */
 const effective = (t) => (t.completions[0] ? t.completions[0].p : t.start);
@@ -1098,7 +1212,7 @@ function closeSheet() {
   if (sheetCleanup) sheetCleanup();
   sheetCleanup = null;
 }
-addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+addEventListener("keydown", (e) => { if (e.key === "Escape" && !authOpen) closeSheet(); });
 const sheetHead = (title) => `<div class="sheet-head"><h2>${title}</h2><button class="close" data-close aria-label="Close">${icon("close")}</button></div>`;
 
 const openAdd = () => openTaskSheet(null);
@@ -1286,17 +1400,28 @@ function openSettings() {
   openSheet(`
     ${sheetHead("Settings")}
     <div class="menu">
+      ${user ? `<div class="menu-item account">${icon("info")}<span>Signed in<span class="sub">${esc(user.email || user.displayName || "Your account")}</span></span><button class="pill mini" data-set="signout">Sign out</button></div>` : ""}
       <button class="menu-item" data-set="sound">${icon("sound")}<span>Sounds<span class="sub">Chimes when you finish tasks</span></span><i class="switch ${state.settings.sound ? "on" : ""}"></i></button>
       <button class="menu-item" data-set="haptics">${icon("buzz")}<span>Haptics<span class="sub">Taps on supported phones</span></span><i class="switch ${state.settings.haptics ? "on" : ""}"></i></button>
       <button class="menu-item" data-set="export">${icon("download")}<span>Save a backup<span class="sub">Download your tasks as a file</span></span></button>
       <label class="menu-item">${icon("upload")}<span>Restore a backup<span class="sub">Replaces everything here</span></span><input type="file" accept="application/json,.json" data-import hidden></label>
       <button class="menu-item red" data-set="erase">${icon("trash")}<span>Erase everything<span class="sub">Every task and its history</span></span></button>
     </div>
-    <p class="note">${icon("info", 'style="width:14px;height:14px;display:inline;vertical-align:-2px"')} Your tasks are saved only on this device, in this browser. On iPhone, the Home Screen app and Safari keep separate copies, so stick to one. Save a backup now and then.</p>`, "day", (sheet) => {
+    <p class="note">${icon("info", 'style="width:14px;height:14px;display:inline;vertical-align:-2px"')} ${user ? "Your tasks sync to your account and work offline. Changes made offline sync when you reconnect." : "Sign in to sync your tasks."}</p>`, "day", (sheet) => {
     sheet.addEventListener("click", (e) => {
       const b = e.target.closest("[data-set]");
       if (!b) return;
       const k = b.dataset.set;
+      if (k === "signout") {
+        closeSheet();
+        cloud.signOut().then(() => {
+          state = blankState();
+          saveLocal();
+          for (const s of SCOPES) { cards[s].clear(); $("[data-list]", pages[s]).innerHTML = ""; }
+          renderAll();
+        });
+        return;
+      }
       if (k === "sound" || k === "haptics") {
         state.settings[k] = !state.settings[k];
         $(".switch", b).classList.toggle("on", state.settings[k]);
@@ -1318,7 +1443,7 @@ function openSettings() {
         b.outerHTML = `<button class="cta danger" data-set="erase-confirm">${icon("trash")}Yes, erase everything</button>`;
       }
       if (k === "erase-confirm") {
-        state = { ...blankState(), seeded: true, settings: state.settings };
+        state = { ...blankState(), settings: state.settings };
         save();
         closeSheet();
         for (const s of SCOPES) { cards[s].clear(); $("[data-list]", pages[s]).innerHTML = ""; }
@@ -1332,7 +1457,7 @@ function openSettings() {
       try {
         const data = JSON.parse(await file.text());
         if (!Array.isArray(data.tasks)) throw new Error("bad");
-        state = { ...blankState(), ...data, seeded: true };
+        state = { ...blankState(), ...data };
         save();
         closeSheet();
         for (const s of SCOPES) { cards[s].clear(); $("[data-list]", pages[s]).innerHTML = ""; }
@@ -1486,7 +1611,6 @@ function spreadChart(s, slots) {
 
 /* ---------- Boot ---------- */
 function boot() {
-  seedStarter();
   buildPages();
   setScopeColors(selected);
   renderAll();
@@ -1496,7 +1620,7 @@ function boot() {
 
   // Another tab or window changed the data: pick it up.
   addEventListener("storage", (e) => {
-    if (e.key !== STORE_KEY) return;
+    if (e.key !== STORE_KEY || user) return;
     state = load();
     renderAll();
   });
@@ -1513,9 +1637,13 @@ function boot() {
     if (document.hidden) return;
     let raw = null;
     try { raw = localStorage.getItem(STORE_KEY); } catch {}
-    if (raw && raw !== JSON.stringify(state)) state = load();
+    if (!user && raw && raw !== JSON.stringify(state)) state = load();
     refresh();
   });
+
+  if (window.CadenceCloud) startCloud();
+  else addEventListener("cloud-ready", startCloud, { once: true });
+  addEventListener("cloud-auth-error", (e) => { if (!user) openAuth(authMessage(e.detail)); });
 
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ("serviceWorker" in navigator && location.protocol === "https:") {

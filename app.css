@@ -309,3 +309,25 @@ svg { display: block; }
 .pick-date svg { width: 16px; height: 16px; }
 .pick-date input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; color-scheme: dark; }
 .menu-item.center { justify-content: center; }
+
+/* ---------- Sign-in ---------- */
+.auth-lede { font-size: 15px; margin-top: -8px; }
+.google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 15px; border-radius: 99px; background: #fff; color: #1f1f1f; font-size: 17px; font-weight: 800; }
+.google-btn svg { width: 20px; height: 20px; }
+.google-btn:disabled, .auth-form button:disabled { opacity: 0.5; }
+.or { display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: rgba(255, 255, 255, 0.15); }
+.auth-form { display: grid; gap: 10px; }
+.auth-field { font-size: 17px; padding: 15px 16px; }
+.auth-error { margin: 0; font-size: 14px; font-weight: 700; color: #ff7b80; }
+.auth-error.ok { color: var(--green); }
+.auth-links { display: flex; justify-content: space-between; }
+.auth-links button { font-size: 14px; font-weight: 700; color: var(--a); padding: 8px 2px; }
+.menu-item.account { cursor: default; }
+
+/* Sync status: a small dot on the settings button */
+.settings-btn { position: relative; }
+:root[data-sync] .settings-btn::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+:root[data-sync="saving"] .settings-btn::after { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+:root[data-sync="offline"] .settings-btn::after, :root[data-sync="off"] .settings-btn::after { background: rgba(255,255,255,.4); box-shadow: none; }
+:root[data-sync="error"] .settings-btn::after { background: #ff3b47; box-shadow: 0 0 6px #ff3b47; }

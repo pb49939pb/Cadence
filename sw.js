@@ -1,10 +1,11 @@
 // Offline support: use the network when it answers, fall back to the cached copy offline.
-const CACHE = "cadence-v2";
+const CACHE = "cadence-v3";
 const SHELL = [
   "./",
   "index.html",
   "app.css",
   "app.js",
+  "cloud.js",
   "manifest.webmanifest",
   "icons/icon-180.png",
   "icons/icon-192.png",
@@ -24,7 +25,20 @@ self.addEventListener("activate", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
-  if (e.request.method !== "GET" || new URL(e.request.url).origin !== location.origin) return;
+  if (e.request.method !== "GET") return;
+  const url = new URL(e.request.url);
+  // Firebase SDK files are versioned and never change: cache-first so the app starts offline.
+  if (url.hostname === "www.gstatic.com" && url.pathname.startsWith("/firebasejs/")) {
+    e.respondWith(
+      caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
+        if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }
+        return res;
+      }))
+    );
+    return;
+  }
+  // Only the app's own files; never Firebase's sign-in pages under /__/.
+  if (url.origin !== location.origin || url.pathname.startsWith("/__/")) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {
