@@ -1117,7 +1117,7 @@ let openRow = null;      // { row, close } for the one row swiped open
 
 function attachPress(el, row) {
   const del = $(".swipe-del", row);
-  let startX = 0, startY = 0;
+  let startX = 0, startY = 0, down = false; // down: a finger or mouse button is pressed on this card
   let mode = null;       // null until we know if this is a tap, a scroll or a swipe
   let base = 0, offset = 0, armed = false, swallowClick = false;
 
@@ -1131,13 +1131,17 @@ function attachPress(el, row) {
   const close = () => { setOffset(0, true); base = 0; if (openRow && openRow.row === row) openRow = null; };
 
   el.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     if (openRow && openRow.row !== row) openRow.close();
+    down = true;
     mode = null; armed = false;
     startX = e.clientX; startY = e.clientY;
     base = offset;
     if (!e.target.closest(".orb-hit")) el.classList.add("pressing");
   });
   el.addEventListener("pointermove", (e) => {
+    // Plain mouse movement (hovering) must never swipe: only a press-and-drag does.
+    if (!down || (e.pointerType === "mouse" && !(e.buttons & 1))) return;
     const dx = e.clientX - startX, dy = e.clientY - startY;
     if (!mode) {
       if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
@@ -1161,6 +1165,7 @@ function attachPress(el, row) {
     }
   });
   const end = () => {
+    down = false;
     el.classList.remove("pressing");
     if (mode !== "swipe") return;
     swallowClick = true;
@@ -1173,7 +1178,7 @@ function attachPress(el, row) {
     } else close();
   };
   el.addEventListener("pointerup", end);
-  el.addEventListener("pointercancel", () => { el.classList.remove("pressing"); if (mode === "swipe") close(); });
+  el.addEventListener("pointercancel", () => { down = false; el.classList.remove("pressing"); if (mode === "swipe") close(); });
   el.addEventListener("pointerleave", () => { if (mode !== "swipe") el.classList.remove("pressing"); });
   el.addEventListener("contextmenu", (e) => e.preventDefault());
   el.addEventListener("click", (e) => {
