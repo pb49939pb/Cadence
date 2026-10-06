@@ -31,7 +31,8 @@ try {
 }
 
 const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
-const tasksCol = (uid) => collection(db, "users", uid, "tasks");
+// Personal tasks keep the original path; Work tasks live alongside in their own collection.
+const tasksCol = (uid, space) => collection(db, "users", uid, space === "work" ? "workTasks" : "tasks");
 const settingsDoc = (uid) => doc(db, "users", uid, "meta", "settings");
 
 window.CadenceCloud = {
@@ -47,17 +48,17 @@ window.CadenceCloud = {
   resetPassword: (email) => sendPasswordResetEmail(auth, email),
   signOut: () => signOut(auth),
 
-  watchTasks: (uid, next, error) =>
-    onSnapshot(tasksCol(uid), (snap) => next(snap.docs.map((d) => d.data()), snap.metadata), error),
+  watchTasks: (uid, space, next, error) =>
+    onSnapshot(tasksCol(uid, space), (snap) => next(snap.docs.map((d) => d.data()), snap.metadata), error),
   watchSettings: (uid, next) =>
     onSnapshot(settingsDoc(uid), (snap) => next(snap.exists() ? snap.data() : null), () => {}),
-  fetchTasks: async (uid) => (await getDocs(tasksCol(uid))).docs.map((d) => d.data()),
+  fetchTasks: async (uid, space) => (await getDocs(tasksCol(uid, space))).docs.map((d) => d.data()),
 
   /** Write changed tasks, delete removed ones, optionally replace settings. Batches of up to 450. */
-  async commit(uid, sets, deletes, settings) {
+  async commit(uid, space, sets, deletes, settings) {
     const ops = [
-      ...sets.map((t) => (b) => b.set(doc(tasksCol(uid), t.id), t)),
-      ...deletes.map((id) => (b) => b.delete(doc(tasksCol(uid), id))),
+      ...sets.map((t) => (b) => b.set(doc(tasksCol(uid, space), t.id), t)),
+      ...deletes.map((id) => (b) => b.delete(doc(tasksCol(uid, space), id))),
       ...(settings ? [(b) => b.set(settingsDoc(uid), settings)] : []),
     ];
     const commits = [];

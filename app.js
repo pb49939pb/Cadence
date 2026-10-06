@@ -5,7 +5,15 @@
    cadences. Everything lives in localStorage on this device.
    ========================================================= */
 
-const STORE_KEY = "cadence.v1";
+const STORE_KEY = "cadence.v1";          // Personal (the original key)
+const SPACE_KEY = "cadence.space";
+/** Work and Personal are separate task lists, like two accounts. Settings (sound, haptics) are shared. */
+const SPACES = {
+  work:     { label: "Work",     icon: "briefcase", colors: ["#00C8FF", "#3D5AFE"] },
+  personal: { label: "Personal", icon: "home",      colors: ["#FF3D9A", "#B14DFF"] },
+};
+let space = (() => { try { return localStorage.getItem(SPACE_KEY) === "work" ? "work" : "personal"; } catch { return "personal"; } })();
+const storeKey = (sp = space) => (sp === "work" ? "cadence.work.v1" : STORE_KEY);
 const SCOPES = ["day", "week", "month", "year"];
 const META = {
   day:   { tab: "Today", title: "Today",      once: "Today",      every: "Every day",   cadence: "Daily",   unit: "day",   colors: ["#FF2D87", "#FF8A00"], hist: 7,  icon: "sun",      clear: "Day crushed!" },
@@ -52,6 +60,8 @@ const ICON = {
   chev: '<path d="M9 5l7 7-7 7" stroke-width="2.6"/>',
   zzz: '<path d="M4 5h6l-6 7h6M13 12h7l-7 8h7" stroke-width="2.4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5.5l3.5 2"/>',
+  briefcase: '<rect x="3" y="7" width="18" height="13" rx="3"/><path d="M8.5 7V5.5A1.5 1.5 0 0 1 10 4h4a1.5 1.5 0 0 1 1.5 1.5V7M3 12.5h18"/>',
+  home: '<path d="M4 11l8-7 8 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5" stroke-width="2.6"/>',
 };
 const icon = (name, extra = "") =>
@@ -107,9 +117,9 @@ let state = load();
 function blankState() {
   return { tasks: [], settings: { sound: true, haptics: true } };
 }
-function load() {
+function load(sp = space) {
   try {
-    const raw = localStorage.getItem(STORE_KEY);
+    const raw = localStorage.getItem(storeKey(sp));
     if (!raw) return blankState();
     const s = JSON.parse(raw);
     return { ...blankState(), ...s, settings: { ...blankState().settings, ...(s.settings || {}) } };
@@ -119,7 +129,7 @@ function load() {
 }
 function saveLocal() {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    localStorage.setItem(storeKey(), JSON.stringify(state));
   } catch {
     toast("Couldn't save. Your phone may be out of storage.");
   }
@@ -153,7 +163,7 @@ function pushToCloud() {
   const settings = sj !== cloudSettings ? (cloudSettings = sj, clean(state.settings)) : null;
   if (!sets.length && !deletes.length && !settings) return;
   setSync("saving");
-  cloud.commit(user.uid, sets, deletes, settings)
+  cloud.commit(user.uid, space, sets, deletes, settings)
     .then(() => setSync("ok"))
     .catch((e) => { setSync("error"); console.warn("Sync failed", e); toast("Couldn't sync that change. It will retry when you're online."); });
 }
@@ -165,14 +175,14 @@ async function migrateLocal(uid) {
   let owner = null;
   try { owner = localStorage.getItem(OWNER_KEY); } catch {}
   if (owner) return; // local copy already belongs to an account
-  const local = load().tasks;
+  const local = load("personal").tasks; // only the pre-sync app had local-only tasks, and they were personal
   if (local.length) {
-    const existing = await cloud.fetchTasks(uid);
+    const existing = await cloud.fetchTasks(uid, "personal");
     const ids = new Set(existing.map((t) => t.id));
     const same = new Set(existing.map((t) => `${t.scope}|${t.title}`));
     const fresh = local.filter((t) => !ids.has(t.id) && !(t.completions.length === 0 && same.has(`${t.scope}|${t.title}`)));
     if (fresh.length) {
-      await cloud.commit(uid, fresh.map(clean), [], existing.length ? null : clean(load().settings));
+      await cloud.commit(uid, "personal", fresh.map(clean), [], existing.length ? null : clean(load("personal").settings));
       toast(`Moved ${fresh.length} task${fresh.length === 1 ? "" : "s"} from this device to your account`);
     }
   }
@@ -195,14 +205,70 @@ function startCloud() {
       state.settings = { ...blankState().settings, ...s };
       saveLocal();
     });
-    unsubTasks = cloud.watchTasks(u.uid, (tasks, meta) => {
-      cloudTasks = new Map(tasks.map((t) => [t.id, JSON.stringify(t)]));
-      state.tasks = tasks.sort((a, b) => a.createdAt - b.createdAt);
-      saveLocal();
-      if (!meta.hasPendingWrites) setSync(meta.fromCache ? "offline" : "ok");
-      renderAll();
-    }, (e) => { setSync("error"); console.warn("Listen failed", e); });
+    watchSpace();
   });
+}
+
+/** Listen to the active space's tasks (call again after switching spaces). */
+function watchSpace() {
+  if (unsubTasks) { unsubTasks(); unsubTasks = null; }
+  cloudTasks = new Map();
+  if (!user) return;
+  const sp = space;
+  unsubTasks = cloud.watchTasks(user.uid, sp, (tasks, meta) => {
+    if (sp !== space) return;
+    cloudTasks = new Map(tasks.map((t) => [t.id, JSON.stringify(t)]));
+    state.tasks = tasks.sort((a, b) => a.createdAt - b.createdAt);
+    saveLocal();
+    if (!meta.hasPendingWrites) setSync(meta.fromCache ? "offline" : "ok");
+    renderAll();
+  }, (e) => { setSync("error"); console.warn("Listen failed", e); });
+}
+
+/* ---------- Work / Personal ---------- */
+function buildSpaceToggle() {
+  let bar = $("#spacebar");
+  if (!bar) { // an older cached index.html may not have it yet
+    bar = document.createElement("header");
+    bar.className = "spacebar";
+    bar.id = "spacebar";
+    document.body.prepend(bar);
+  }
+  const aurora = $(".aurora");
+  if (aurora && !$(".space-glow", aurora)) aurora.insertAdjacentHTML("afterbegin", '<i class="space-glow sg-work"></i><i class="space-glow sg-personal"></i>');
+  bar.innerHTML = `<div class="space-toggle" role="radiogroup" aria-label="Task list">
+      <i class="space-thumb"></i>
+      ${["work", "personal"].map((k) => `<button role="radio" data-space="${k}">${icon(SPACES[k].icon)}${SPACES[k].label}</button>`).join("")}
+    </div>`;
+  bar.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-space]");
+    if (b) switchSpace(b.dataset.space);
+  });
+  applySpace(false);
+}
+function applySpace(animate) {
+  document.documentElement.dataset.space = space;
+  for (const b of document.querySelectorAll("#spacebar [data-space]")) b.setAttribute("aria-checked", String(b.dataset.space === space));
+  if (animate) {
+    $("#pager").animate([{ opacity: 0, transform: "translateY(14px) scale(.985)" }, { opacity: 1, transform: "none" }], { duration: 460, easing: "cubic-bezier(.2,1,.3,1)" });
+  }
+}
+function switchSpace(next) {
+  if (next === space || !SPACES[next]) return;
+  Feel.tap();
+  saveLocal();
+  const settings = state.settings;
+  space = next;
+  try { localStorage.setItem(SPACE_KEY, next); } catch {}
+  state = { ...load(next), settings };
+  if (openRow) openRow = null;
+  settling.clear();
+  snoozeOpen.clear();
+  for (const s of SCOPES) { cards[s].clear(); $("[data-list]", pages[s]).innerHTML = ""; chartSig[s] = null; }
+  applySpace(true);
+  if (user && cloud) watchSpace();
+  renderAll();
+  for (const s of SCOPES) pages[s].scrollTop = 0;
 }
 
 /* ---------- Sign-in ---------- */
@@ -1433,7 +1499,7 @@ function openSettings() {
       <button class="menu-item" data-set="haptics">${icon("buzz")}<span>Haptics<span class="sub">Taps on supported phones</span></span><i class="switch ${state.settings.haptics ? "on" : ""}"></i></button>
       <button class="menu-item" data-set="export">${icon("download")}<span>Save a backup<span class="sub">Download your tasks as a file</span></span></button>
       <label class="menu-item">${icon("upload")}<span>Restore a backup<span class="sub">Replaces everything here</span></span><input type="file" accept="application/json,.json" data-import hidden></label>
-      <button class="menu-item red" data-set="erase">${icon("trash")}<span>Erase everything<span class="sub">Every task and its history</span></span></button>
+      <button class="menu-item red" data-set="erase">${icon("trash")}<span>Erase all ${SPACES[space].label} tasks<span class="sub">Every ${SPACES[space].label.toLowerCase()} task and its history. ${SPACES[space === "work" ? "personal" : "work"].label} is untouched.</span></span></button>
     </div>
     <p class="note">${icon("info", 'style="width:14px;height:14px;display:inline;vertical-align:-2px"')} ${user ? "Your tasks sync to your account and work offline. Changes made offline sync when you reconnect." : "Sign in to sync your tasks."}</p>`, "day", (sheet) => {
     sheet.addEventListener("click", (e) => {
@@ -1444,7 +1510,7 @@ function openSettings() {
         closeSheet();
         cloud.signOut().then(() => {
           state = blankState();
-          saveLocal();
+          try { localStorage.removeItem(storeKey("work")); localStorage.removeItem(storeKey("personal")); } catch {}
           for (const s of SCOPES) { cards[s].clear(); $("[data-list]", pages[s]).innerHTML = ""; }
           renderAll();
         });
@@ -1747,6 +1813,7 @@ function hourChart(hours) {
 
 /* ---------- Boot ---------- */
 function boot() {
+  buildSpaceToggle();
   buildPages();
   setScopeColors(selected);
   renderAll();
@@ -1756,7 +1823,7 @@ function boot() {
 
   // Another tab or window changed the data: pick it up.
   addEventListener("storage", (e) => {
-    if (e.key !== STORE_KEY || user) return;
+    if (e.key !== storeKey() || user) return;
     state = load();
     renderAll();
   });
@@ -1772,7 +1839,7 @@ function boot() {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     let raw = null;
-    try { raw = localStorage.getItem(STORE_KEY); } catch {}
+    try { raw = localStorage.getItem(storeKey()); } catch {}
     if (!user && raw && raw !== JSON.stringify(state)) state = load();
     refresh();
   });
