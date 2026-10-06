@@ -198,6 +198,7 @@ function startCloud() {
     if (!u) { cloudTasks = new Map(); cloudSettings = ""; setSync("off"); openAuth(); return; }
     if (authOpen) closeSheet();
     setSync("saving");
+    try { await cloud.migrateLegacy(u.uid); } catch (e) { console.warn("Moving to the new data layout failed; will retry next open", e); }
     try { await migrateLocal(u.uid); } catch (e) { console.warn("Migration failed", e); toast("Couldn't move this device's tasks yet. Reopen the app to try again."); }
     unsubSettings = cloud.watchSettings(u.uid, (s) => {
       if (!s) return;
@@ -930,6 +931,23 @@ function updateTabs() {
 function renderAll() {
   for (const s of SCOPES) renderPage(s);
   updateTabs();
+  queueSummary();
+}
+
+/* Dashboard summary: a tiny status doc the dashboard at / reads (tasks left today, overdue, streak). */
+let summaryTimer = null, lastSummary = "";
+function queueSummary() {
+  if (!cloud || !user) return;
+  clearTimeout(summaryTimer);
+  summaryTimer = setTimeout(() => {
+    const day = progress("day");
+    const overdue = new Set(SCOPES.flatMap((s) => items(s).filter(overdueSince).map((i) => i.key))).size;
+    const sum = { leftToday: day.total - day.done, dueToday: day.total, overdue, doneToday: doneSince(startOf("day", now())), streak: dayStreak(), tasks: state.tasks.length, day: keyOf(now()) };
+    const j = space + JSON.stringify(sum);
+    if (j === lastSummary) return;
+    lastSummary = j;
+    cloud.writeSummary(user.uid, space, sum).catch(() => { lastSummary = ""; });
+  }, 1500);
 }
 
 function renderPage(s) {
@@ -1865,6 +1883,13 @@ function boot() {
     refresh();
   });
 
+  if (location.hostname.endsWith("github.io")) {
+    const note = document.createElement("a");
+    note.className = "moved-banner";
+    note.href = "https://pat-dashboard-eb494.web.app/cadence/";
+    note.innerHTML = `${icon("info")}<span>Cadence has a new home. Tap to open it, then add it to your Home Screen.</span>`;
+    document.body.appendChild(note);
+  }
   if (window.CadenceCloud) startCloud();
   else addEventListener("cloud-ready", startCloud, { once: true });
   addEventListener("cloud-auth-error", (e) => { if (!user) openAuth(authMessage(e.detail)); });
