@@ -1329,7 +1329,8 @@ function openTaskSheet(key, preset = null) {
 
   let mode = t ? (t.sched ? "sched" : t.repeats ? "every" : "once") : preset ? preset.mode : "once";
   let scope = t && !t.sched ? t.scope : preset ? preset.scope : selected;
-  let hue = t ? t.hue : Math.floor(Math.random() * HUES.length);
+  // New tasks get a random color; after Shift+Enter, never the same one as the task just added.
+  let hue = t ? t.hue : preset ? (preset.hue + 1 + Math.floor(Math.random() * (HUES.length - 1))) % HUES.length : Math.floor(Math.random() * HUES.length);
   const sc0 = t && t.sched;
   let schedType = sc0 ? sc0.type : preset ? preset.schedType : "weekly";
   let days = sc0 && sc0.type === "weekly" ? [...sc0.days] : preset ? [...preset.days] : [today.getDay()];
@@ -1484,7 +1485,7 @@ function openTaskSheet(key, preset = null) {
         // Straight into a fresh sheet with the same When / How often / schedule.
         if (dest && dest !== selected) goTo(dest, false);
         renderAll();
-        openTaskSheet(null, { mode, scope, schedType, days, mday, yearly });
+        openTaskSheet(null, { mode, scope, schedType, days, mday, yearly, hue });
         toast(t ? "Saved · add the next one" : `Added “${title.length > 24 ? title.slice(0, 23) + "…" : title}” · add the next one`);
         return;
       }
