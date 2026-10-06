@@ -11,7 +11,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
 
 // On Firebase Hosting, sign-in runs on the same domain as the app, which iPhone Safari needs for redirects.
-const onFirebaseHosting = /\.(web\.app|firebaseapp\.com)$/.test(location.hostname);
+// (also the custom domain patrickbald.win, which points at the same Firebase Hosting site)
+const onFirebaseHosting = /(\.web\.app|\.firebaseapp\.com|(^|\.)patrickbald\.win)$/.test(location.hostname);
 
 const app = initializeApp({
   apiKey: "AIzaSyBAP3xb635f-N567ABep2RmziXoF-pj-QY",

@@ -62,6 +62,7 @@ const ICON = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5.5l3.5 2"/>',
   briefcase: '<rect x="3" y="7" width="18" height="13" rx="3"/><path d="M8.5 7V5.5A1.5 1.5 0 0 1 10 4h4a1.5 1.5 0 0 1 1.5 1.5V7M3 12.5h18"/>',
   home: '<path d="M4 11l8-7 8 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
+  grid: '<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5" stroke-width="2.6"/>',
 };
 const icon = (name, extra = "") =>
@@ -227,6 +228,19 @@ function watchSpace() {
 }
 
 /* ---------- Work / Personal ---------- */
+/** Always-visible way back to the dashboard (root of whichever site Cadence is served from). */
+function buildHomeButton() {
+  const onDashboardSite = !location.hostname.endsWith("github.io") && location.pathname.startsWith("/cadence");
+  const a = document.createElement("a");
+  a.className = "home-btn";
+  a.href = onDashboardSite ? "/" : "https://pat-dashboard-eb494.web.app/";
+  a.setAttribute("aria-label", "Back to dashboard");
+  a.title = "Dashboard";
+  a.innerHTML = icon("grid");
+  a.addEventListener("click", () => Feel.tap());
+  document.body.appendChild(a);
+}
+
 function buildSpaceToggle() {
   let bar = $("#spacebar");
   if (!bar) { // an older cached index.html may not have it yet
@@ -1852,6 +1866,7 @@ function hourChart(hours) {
 
 /* ---------- Boot ---------- */
 function boot() {
+  buildHomeButton();
   buildSpaceToggle();
   buildPages();
   setScopeColors(selected);
