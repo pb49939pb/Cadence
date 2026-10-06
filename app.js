@@ -51,6 +51,7 @@ const ICON = {
   alert: '<path d="M12 3.2L22 20.5H2z" fill="currentColor" stroke="none"/><path d="M12 9.5v5M12 17.3v.2" stroke="#07060D" stroke-width="2.6"/>',
   chev: '<path d="M9 5l7 7-7 7" stroke-width="2.6"/>',
   zzz: '<path d="M4 5h6l-6 7h6M13 12h7l-7 8h7" stroke-width="2.4"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5.5l3.5 2"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5" stroke-width="2.6"/>',
 };
 const icon = (name, extra = "") =>
@@ -499,28 +500,51 @@ function todayByHour() {
   }
   return counts;
 }
-function spread(scope) {
-  const start = startOf(scope, now());
-  const end = addPeriods(scope, start, 1);
-  const slots = [];
-  if (scope === "year") {
-    for (let m = 0; m < 12; m++) slots.push({ label: new Date(start.getFullYear(), m, 1).toLocaleDateString(undefined, { month: "narrow" }), n: 0 });
-  } else {
-    for (let d = new Date(start); d < end; d.setDate(d.getDate() + 1)) {
-      slots.push({ label: scope === "week" ? d.toLocaleDateString(undefined, { weekday: "short" }) : String(d.getDate()), n: 0 });
-    }
-  }
-  for (const t of state.tasks) {
-    if (t.scope !== scope && !(t.sched && showsOn(t, scope))) continue;
-    for (const c of t.completions) {
-      const d = new Date(c.at);
-      if (d < start || d >= end) continue;
-      const i = scope === "year" ? d.getMonth() : Math.round((startOf("day", d) - start) / 864e5);
-      if (slots[i]) slots[i].n++;
-    }
-  }
-  return slots;
+/** Which cadence a task's check-offs count toward (scheduled tasks by their repeat type). */
+const cadenceOf = (t) => (t.sched ? { weekly: "week", monthly: "month", yearly: "year" }[t.sched.type] : t.scope);
+
+/** Every check-off ever, newest first. */
+function completionEvents() {
+  const out = [];
+  for (const t of state.tasks) for (const c of t.completions) out.push({ t, at: c.at, cad: cadenceOf(t) });
+  return out.sort((a, b) => b.at - a.at);
 }
+const emptyBy = () => ({ day: 0, week: 0, month: 0, year: 0 });
+
+/** Check-offs in each of the last n periods, split by cadence. */
+function bucketsFor(scope, n) {
+  const cur = startOf(scope, now());
+  const out = [];
+  for (let back = n - 1; back >= 0; back--) {
+    const s = addPeriods(scope, cur, -back);
+    out.push({ s, e: addPeriods(scope, s, 1), cur: back === 0, by: emptyBy(), total: 0, label: back === 0 ? "Now" : shortLabel(scope, keyOf(s)) });
+  }
+  return fill(out);
+}
+/** Check-offs inside the current period: by day (week, month) or by month (year). */
+function insideBuckets(scope) {
+  const s0 = startOf(scope, now()), end = addPeriods(scope, s0, 1);
+  const sub = scope === "year" ? "month" : "day";
+  const today = startOf(sub, now()).getTime();
+  const out = [];
+  for (let s = s0; s < end; s = addPeriods(sub, s, 1)) {
+    const label = scope === "week" ? s.toLocaleDateString(undefined, { weekday: "short" })
+      : scope === "month" ? String(s.getDate()) : s.toLocaleDateString(undefined, { month: "narrow" });
+    out.push({ s, e: addPeriods(sub, s, 1), cur: s.getTime() === today, future: s.getTime() > today, by: emptyBy(), total: 0, label });
+  }
+  return fill(out);
+}
+function fill(buckets) {
+  const first = buckets[0].s.getTime(), last = buckets[buckets.length - 1].e.getTime();
+  for (const ev of completionEvents()) {
+    if (ev.at < first || ev.at >= last) continue;
+    const b = buckets.find((b) => ev.at >= b.s.getTime() && ev.at < b.e.getTime());
+    if (b) { b.by[ev.cad]++; b.total++; }
+  }
+  return buckets;
+}
+const doneSince = (date) => completionEvents().filter((e) => e.at >= date.getTime()).length;
+
 function elapsed(scope) {
   const s = startOf(scope, now()), e = addPeriods(scope, s, 1);
   return Math.min(1, Math.max(0, (now() - s) / (e - s)));
@@ -738,6 +762,7 @@ function buildPages() {
           </div>
         </header>
         <div class="chips" data-chips></div>
+        <button class="history-btn" data-history>${icon("clock")}<span class="h-label">Past tasks</span><span class="h-sub" data-history-sub></span>${icon("chev", 'class="h-chev"')}</button>
         <div class="overdue-strip" data-overdue hidden></div>
         <div class="list" data-list></div>
         <div class="snoozed" data-snoozed hidden>
@@ -754,6 +779,7 @@ function buildPages() {
       </div>`;
     pager.appendChild(sec);
     pages[s] = sec;
+    $("[data-history]", sec).addEventListener("click", () => { Feel.tap(); openHistory(); });
     $("[data-snoozed]", sec).addEventListener("click", (e) => {
       const row = e.target.closest("[data-open]");
       if (row) { Feel.tap(); openTaskSheet(row.dataset.open); return; }
@@ -894,6 +920,8 @@ function renderPage(s) {
 
   renderList(s, p);
   renderSnoozed(s, p);
+  const n = doneSince(startOf(s, now()));
+  $("[data-history-sub]", page).textContent = `${n} done ${s === "day" ? "today" : `this ${META[s].unit}`}`;
   renderCharts(s, p, pr);
 }
 
@@ -1470,6 +1498,96 @@ function openSettings() {
   });
 }
 
+/* ---------- History (past tasks) ---------- */
+function openHistory() {
+  const evs = completionEvents();
+  const today = startOf("day", now());
+  const byDay = new Map();
+  for (const ev of evs) {
+    const k = keyOf(new Date(ev.at));
+    if (!byDay.has(k)) byDay.set(k, []);
+    byDay.get(k).push(ev);
+  }
+  // Stats
+  let best = null;
+  for (const [k, list] of byDay) if (!best || list.length > best.n) best = { k, n: list.length };
+  let streak = 0;
+  for (let d = byDay.has(keyOf(today)) ? today : addDays(today, -1); byDay.has(keyOf(d)); d = addDays(d, -1)) streak++;
+  const weekN = doneSince(startOf("week", now()));
+
+  // Calendar grid: last 18 weeks, one column per week
+  const WEEKS = 18;
+  const gridStart = addDays(startOf("week", now()), -7 * (WEEKS - 1));
+  const level = (n) => (n === 0 ? 0 : n === 1 ? 1 : n <= 3 ? 2 : n <= 6 ? 3 : 4);
+  let cells = "", months = "";
+  for (let w = 0; w < WEEKS; w++) {
+    const colStart = addDays(gridStart, w * 7);
+    // Label a column when a month starts in it.
+    const first = [0, 1, 2, 3, 4, 5, 6].map((d) => addDays(colStart, d)).find((d) => d.getDate() === 1);
+    months += `<span style="grid-column:${w + 1}">${first ? first.toLocaleDateString(undefined, { month: "short" }) : ""}</span>`;
+    for (let d = 0; d < 7; d++) {
+      const day = addDays(colStart, d), k = keyOf(day);
+      if (day > today) { cells += `<i class="hm-cell future" style="grid-column:${w + 1};grid-row:${d + 1}"></i>`; continue; }
+      const n = (byDay.get(k) || []).length;
+      cells += `<button class="hm-cell l${level(n)} ${k === keyOf(today) ? "today" : ""}" style="grid-column:${w + 1};grid-row:${d + 1}" data-day="${k}" aria-label="${dueLabel(k)}: ${n} done"></button>`;
+    }
+  }
+
+  const dayTitle = (k) => k === keyOf(today) ? "Today" : k === keyOf(addDays(today, -1)) ? "Yesterday" : dueLabel(k);
+  const kindLabel = (t) => t.sched ? schedLabel(t.sched) : t.repeats ? META[t.scope].cadence : META[t.scope].once;
+  const days = [...byDay.keys()].sort().reverse();
+  const group = (k) => {
+    const list = byDay.get(k);
+    return `<section class="tl-group" id="tl-${k}">
+      <div class="tl-day"><b>${esc(dayTitle(k))}</b><span>${list.length} done</span><i class="tl-bar" style="width:${Math.min(100, list.length * 12)}%"></i></div>
+      ${list.map((ev) => `<div class="tl-item" style="--hue:${HUES[ev.t.hue % HUES.length]};${scopeVars(ev.cad)}">
+        <i class="tl-dot">${icon("check")}</i>
+        <div class="tl-text"><div class="tl-title">${esc(ev.t.title)}</div><div class="tl-kind"><i class="dot"></i>${esc(kindLabel(ev.t))}</div></div>
+        <time>${new Date(ev.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>
+      </div>`).join("")}
+    </section>`;
+  };
+  let shown = 0;
+  const PAGE = 21;
+
+  openSheet(`
+    ${sheetHead("Past tasks")}
+    <div class="h-stats">
+      <div class="h-stat" style="--col:#00F5A0"><b>${evs.length}</b><span>all time</span></div>
+      <div class="h-stat" style="--col:${META.week.colors[0]}"><b>${weekN}</b><span>this week</span></div>
+      <div class="h-stat" style="--col:#FF8A00"><b>${streak}</b><span>day streak</span></div>
+      <div class="h-stat" style="--col:${META.year.colors[1]}"><b>${best ? best.n : 0}</b><span>best day</span>${best ? `<small>${esc(parseKey(best.k).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}</small>` : ""}</div>
+    </div>
+    <div class="heatmap-wrap">
+      <div class="hm-months" style="grid-template-columns:repeat(${WEEKS},1fr)">${months}</div>
+      <div class="heatmap" style="grid-template-columns:repeat(${WEEKS},1fr)">${cells}</div>
+      <div class="hm-legend"><span>Less</span><i class="hm-cell l0"></i><i class="hm-cell l1"></i><i class="hm-cell l2"></i><i class="hm-cell l3"></i><i class="hm-cell l4"></i><span>More</span></div>
+    </div>
+    <div class="timeline" data-timeline>${evs.length ? "" : `<div class="chart-empty">Nothing checked off yet. Finish a task and it shows up here.</div>`}</div>
+    <button class="menu-item center" data-more hidden>Show earlier days</button>`, "day", (sheet) => {
+    const tl = $("[data-timeline]", sheet), more = $("[data-more]", sheet);
+    const showMore = (upTo) => {
+      const next = Math.max(shown + PAGE, upTo || 0);
+      tl.insertAdjacentHTML("beforeend", days.slice(shown, next).map(group).join(""));
+      shown = Math.min(next, days.length);
+      more.hidden = shown >= days.length;
+    };
+    showMore();
+    more.onclick = () => showMore();
+    sheet.addEventListener("click", (e) => {
+      const c = e.target.closest("[data-day]");
+      if (!c) return;
+      Feel.tap();
+      const k = c.dataset.day, i = days.indexOf(k);
+      if (i < 0) { toast(`Nothing checked off on ${dueLabel(k)}`); return; }
+      if (i >= shown) showMore(i + 1);
+      const g = $(`#tl-${k}`, sheet);
+      g.scrollIntoView({ behavior: "smooth", block: "start" });
+      g.classList.remove("flash-row"); void g.offsetWidth; g.classList.add("flash-row");
+    });
+  });
+}
+
 /* ---------- Charts (SVG) ---------- */
 function card(title, sub, ic, col, inner) {
   return `<div class="card"><div class="card-head" style="--col:${col}">${icon(ic)}<h2>${title}</h2>${sub ? `<small>${sub}</small>` : ""}</div>${inner}</div>`;
@@ -1478,7 +1596,8 @@ function card(title, sub, ic, col, inner) {
 function renderCharts(s, p, pr) {
   const box = $("[data-charts]", pages[s]);
   const hist = history(s);
-  const sig = JSON.stringify([s, p, pr, hist.map((h) => h.prog), s === "day" ? todayByHour() : spread(s), SCOPES.map((x) => progress(x)), Math.round(elapsed(s) * 100)]);
+  const evs = completionEvents();
+  const sig = JSON.stringify([s, p, keyOf(now()), pr, hist.map((h) => h.prog), s === "day" ? todayByHour() : null, evs.length, evs[0] && evs[0].at, SCOPES.map((x) => progress(x)), Math.round(elapsed(s) * 100)]);
   if (chartSig[s] === sig) return;
   chartSig[s] = sig;
   const m = META[s];
@@ -1500,9 +1619,53 @@ function renderCharts(s, p, pr) {
             <div class="pace-verdict" style="color:${diff >= 0 ? m.colors[0] : "rgba(255,255,255,.7)"}">${pr.total === 0 ? `${icon("info")}Nothing scheduled yet` : `${icon(diff >= 0 ? "hare" : "tortoise")}${diff >= 0 ? `${diff} points ahead of pace` : `${-diff} points behind pace`}`}</div>
           </div>
         </div>`) +
-      card(s === "year" ? "Month by month" : "Day by day", "check-offs", "line", m.colors[1], spreadChart(s, spread(s))) +
-      card(`Last ${m.hist} ${m.unit}s`, "% done", "bars", m.colors[0], historyChart(s, hist));
+      card(s === "year" ? "This year, month by month" : `This ${m.unit}, day by day`, "tasks done", "bars", m.colors[1], stackedChart(`in-${s}`, insideBuckets(s), s === "month" ? 5 : 1)) +
+      card(`Completed per ${m.unit}`, `last ${PER_COUNT[s]}`, "bars", m.colors[0], stackedChart(`per-${s}`, bucketsFor(s, PER_COUNT[s]), 1, true)) +
+      card(`Last ${m.hist} ${m.unit}s`, "% of tasks done", "bars", m.colors[0], historyChart(s, hist));
   }
+}
+
+const PER_COUNT = { week: 12, month: 12, year: 5 };
+const cadenceLegend = () => `<div class="legend-row">${SCOPES.map((x) => `<span style="${scopeVars(x)}"><i class="dot"></i>${META[x].cadence}</span>`).join("")}</div>`;
+
+/** Bars stacked by cadence with the total on top. labelEvery thins x labels; avg draws an average line. */
+function stackedChart(id, buckets, labelEvery = 1, avg = false) {
+  const W = 320, H = 176, top = 20, bottom = 22, n = buckets.length;
+  const slot = W / n, bw = Math.min(28, slot * 0.66);
+  const max = Math.max(3, ...buckets.map((b) => b.total));
+  const y = (v) => (v / max) * (H - top - bottom);
+  const order = ["year", "month", "week", "day"]; // bottom to top
+  let defs = "", out = "";
+  const past = buckets.filter((b) => !b.future);
+  if (avg && past.length > 1) {
+    const a = past.reduce((n, b) => n + b.total, 0) / past.length;
+    const ay = H - bottom - y(a);
+    out += `<line x1="0" x2="${W}" y1="${ay}" y2="${ay}" stroke="rgba(255,255,255,.35)" stroke-dasharray="4 4"/>
+      <text x="0" y="${ay - 5}" font-size="10">avg ${a < 10 ? a.toFixed(1) : Math.round(a)}</text>`;
+  }
+  buckets.forEach((b, i) => {
+    const x = i * slot + (slot - bw) / 2, h = y(b.total);
+    if (b.total) {
+      defs += `<clipPath id="${id}-c${i}"><rect x="${x}" y="${H - bottom - h}" width="${bw}" height="${h}" rx="${Math.min(7, bw / 2)}"/></clipPath>`;
+      let yy = H - bottom, segs = "";
+      for (const c of order) {
+        if (!b.by[c]) continue;
+        const sh = y(b.by[c]);
+        yy -= sh;
+        segs += `<rect x="${x}" y="${yy}" width="${bw}" height="${sh}" fill="url(#${id}-g-${c})"/>`;
+      }
+      out += `<g class="grow" style="animation-delay:${Math.min(i * 30, 600)}ms" clip-path="url(#${id}-c${i})" opacity="${b.cur || !buckets.some((x) => x.cur) ? 1 : 0.8}">${segs}</g>`;
+      out += `<text class="${b.cur ? "val" : ""} fade-in" x="${x + bw / 2}" y="${H - bottom - h - 5}" font-size="${n > 20 ? 8 : 11}" text-anchor="middle">${b.total}</text>`;
+    } else if (!b.future) {
+      out += `<rect x="${x}" y="${H - bottom - 2}" width="${bw}" height="2" rx="1" fill="rgba(255,255,255,.18)"/>`;
+    }
+    if (b.cur) out += `<rect x="${x - 2}" y="${top - 6}" width="${bw + 4}" height="${H - top - bottom + 6}" rx="8" fill="none" stroke="rgba(255,255,255,.22)" stroke-dasharray="3 3"/>`;
+    if (i % labelEvery === 0 || i === n - 1 || b.cur) out += `<text class="${b.cur ? "val" : ""}" x="${x + bw / 2}" y="${H - 5}" font-size="${n > 20 ? 9 : 11}" text-anchor="middle">${esc(b.label)}</text>`;
+  });
+  for (const c of SCOPES) defs += `<linearGradient id="${id}-g-${c}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${META[c].colors[0]}"/><stop offset="1" stop-color="${META[c].colors[1]}"/></linearGradient>`;
+  const total = buckets.reduce((n, b) => n + b.total, 0);
+  if (!total) return `<div class="chart-empty">Nothing checked off yet. Finished tasks stack up here.</div>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}"><defs>${defs}</defs>${out}</svg>${cadenceLegend()}`;
 }
 
 function paceRow(label, v, fill) {
@@ -1581,33 +1744,6 @@ function hourChart(hours) {
   return `<svg class="chart" viewBox="0 0 ${W} ${H}">${out}</svg>${legend}`;
 }
 
-function spreadChart(s, slots) {
-  const W = 320, H = 150, top = 12, bottom = 22, left = 8, right = 20;
-  const n = slots.length, max = Math.max(2, ...slots.map((x) => x.n));
-  const x = (i) => left + (n === 1 ? 0 : (i / (n - 1)) * (W - left - right));
-  const y = (v) => H - bottom - (v / max) * (H - top - bottom);
-  const pts = slots.map((sl, i) => [x(i), y(sl.n)]);
-  let d = `M${pts[0][0]},${pts[0][1]}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-    const c1y = Math.min(H - bottom, p1[1] + (p2[1] - p0[1]) / 6), c2y = Math.min(H - bottom, p2[1] - (p3[1] - p1[1]) / 6);
-    d += ` C${p1[0] + (p2[0] - p0[0]) / 6},${c1y} ${p2[0] - (p3[0] - p1[0]) / 6},${c2y} ${p2[0]},${p2[1]}`;
-  }
-  const [a, b] = META[s].colors;
-  let out = `<defs>
-      <linearGradient id="sa-${s}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${a}" stop-opacity=".55"/><stop offset="1" stop-color="${b}" stop-opacity="0"/></linearGradient>
-      <linearGradient id="sl-${s}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient>
-    </defs>`;
-  for (const g of [max, Math.round(max / 2)]) out += `<line x1="${left}" x2="${W - right}" y1="${y(g)}" y2="${y(g)}" stroke="rgba(255,255,255,.08)"/><text x="${W - right + 4}" y="${y(g) + 4}" font-size="10">${g}</text>`;
-  out += `<path class="fade-in" d="${d} L${pts[n - 1][0]},${H - bottom} L${pts[0][0]},${H - bottom} Z" fill="url(#sa-${s})"/>`;
-  out += `<path class="draw" pathLength="1" d="${d}" fill="none" stroke="url(#sl-${s})" stroke-width="3" stroke-linecap="round"/>`;
-  slots.forEach((sl, i) => {
-    if (sl.n) out += `<circle class="fade-in" cx="${pts[i][0]}" cy="${pts[i][1]}" r="3.5" fill="#fff"/>`;
-    const show = s !== "month" || i % 5 === 0 || i === n - 1;
-    if (show) out += `<text x="${pts[i][0]}" y="${H - 5}" font-size="11" text-anchor="middle">${esc(sl.label)}</text>`;
-  });
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}">${out}</svg>`;
-}
 
 /* ---------- Boot ---------- */
 function boot() {

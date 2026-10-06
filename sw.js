@@ -1,5 +1,5 @@
 // Offline support: use the network when it answers, fall back to the cached copy offline.
-const CACHE = "cadence-v3";
+const CACHE = "cadence-v4";
 const SHELL = [
   "./",
   "index.html",
