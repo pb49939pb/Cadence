@@ -9,8 +9,8 @@
    mode "tasks" (Cadence): finish things; unfinished one-offs carry over as overdue; snooze hides.
    mode "goals" (Momentum): hit things each period; a period that ends unhit is a miss; skip excuses a period. */
 const CONFIG = window.APP_CONFIG || {};
-const APP_ID = CONFIG.id || "cadence";
-const APP_NAME = CONFIG.name || "Cadence";
+const APP_ID = CONFIG.id;   // no fallback: guessing the app would open the wrong app's data
+const APP_NAME = CONFIG.name || "App";
 const GOALS = CONFIG.mode === "goals";
 const W = {
   item: "task", items: "tasks", Item: "Task", Items: "Tasks", done: "done", Done: "Done", left: "left",
@@ -2028,6 +2028,10 @@ function hourChart(hours) {
 
 /* ---------- Boot ---------- */
 function boot() {
+  if (!APP_ID) {
+    document.body.insertAdjacentHTML("beforeend", '<div class="moved-banner" style="bottom:auto;top:40%">Couldn\'t finish loading. Check your connection and reload.</div>');
+    return;
+  }
   buildHomeButton();
   buildSpaceToggle();
   buildPages();

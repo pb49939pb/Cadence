@@ -34,7 +34,8 @@ try {
 const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 // One Firebase project serves several personal apps: every app keeps its data under apps/{app}/users/{uid}.
 const CONFIG = window.APP_CONFIG || {};
-const APP = CONFIG.id || "cadence";
+const APP = CONFIG.id;
+if (!APP) throw new Error("config.js didn't load; not connecting to the database"); // never guess the app
 const COLS = CONFIG.collections || { personal: "tasks", work: "workTasks" };
 const base = (uid) => ["apps", APP, "users", uid];
 const tasksCol = (uid, space) => collection(db, ...base(uid), space === "work" ? COLS.work : COLS.personal);
