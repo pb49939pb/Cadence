@@ -1317,7 +1317,8 @@ const sheetHead = (title) => `<div class="sheet-head"><h2>${title}</h2><button c
 const openAdd = () => openTaskSheet(null);
 
 /** New task (key = null) or open an existing one: edit everything, snooze, delete. */
-function openTaskSheet(key) {
+/** preset: carry When / How often / schedule over from the last task (Shift+Enter "add another"). */
+function openTaskSheet(key, preset = null) {
   const today = now();
   let t = key ? state.tasks.find((x) => x.id === taskIdOf(key)) : null;
   if (key && !t) return;
@@ -1326,14 +1327,14 @@ function openTaskSheet(key) {
   const itemP = key && key.includes("@") ? key.split("@")[1] : t ? periodKey(t.scope) : null;
   const item = t ? { t, p: itemP, key } : null;
 
-  let mode = t ? (t.sched ? "sched" : t.repeats ? "every" : "once") : "once";
-  let scope = t && !t.sched ? t.scope : selected;
+  let mode = t ? (t.sched ? "sched" : t.repeats ? "every" : "once") : preset ? preset.mode : "once";
+  let scope = t && !t.sched ? t.scope : preset ? preset.scope : selected;
   let hue = t ? t.hue : Math.floor(Math.random() * HUES.length);
   const sc0 = t && t.sched;
-  let schedType = sc0 ? sc0.type : "weekly";
-  let days = sc0 && sc0.type === "weekly" ? [...sc0.days] : [today.getDay()];
-  let mday = sc0 && sc0.type === "monthly" ? sc0.day : today.getDate();
-  let yearly = sc0 && sc0.type === "yearly" ? keyOf(new Date(today.getFullYear(), sc0.month, sc0.day)) : keyOf(today);
+  let schedType = sc0 ? sc0.type : preset ? preset.schedType : "weekly";
+  let days = sc0 && sc0.type === "weekly" ? [...sc0.days] : preset ? [...preset.days] : [today.getDay()];
+  let mday = sc0 && sc0.type === "monthly" ? sc0.day : preset ? preset.mday : today.getDate();
+  let yearly = sc0 && sc0.type === "yearly" ? keyOf(new Date(today.getFullYear(), sc0.month, sc0.day)) : preset ? preset.yearly : keyOf(today);
 
   const snoozeChoices = () => {
     const d = (n) => keyOf(addDays(today, n));
@@ -1360,6 +1361,7 @@ function openTaskSheet(key) {
     <div data-sched-wrap hidden><div class="section-label">Repeats</div><div class="pills three" data-stype></div><div class="sched-pick" data-spick></div></div>
     <div><div class="section-label">Color</div><div class="swatches" data-swatches></div></div>
     <button class="cta" id="taskGo" disabled>${t ? icon("check") + "Save changes" : icon("plus") + "Add task"}</button>
+    <p class="kbd-hint"><kbd>Enter</kbd> to ${t ? "save" : "add"} · <kbd>Shift</kbd>+<kbd>Enter</kbd> to ${t ? "save and add a new task" : "add another"}</p>
     ${t ? `<button class="menu-item red center" data-delete>${icon("trash")}Delete task</button>` : ""}`, scope, (sheet) => {
     const field = $("#taskTitle", sheet), go = $("#taskGo", sheet);
     field.value = t ? t.title : "";
@@ -1445,7 +1447,7 @@ function openTaskSheet(key) {
     const dateIn = $("#snoozeDate", sheet);
     if (dateIn) dateIn.addEventListener("change", () => { if (dateIn.value) finishSnooze(dateIn.value); });
 
-    const submit = () => {
+    const submit = (another = false) => {
       const title = field.value.replace(/\s+/g, " ").trim();
       if (!valid()) return;
       live();
@@ -1478,18 +1480,31 @@ function openTaskSheet(key) {
       }
       save();
       Feel.tap();
+      if (another) {
+        // Straight into a fresh sheet with the same When / How often / schedule.
+        if (dest && dest !== selected) goTo(dest, false);
+        renderAll();
+        openTaskSheet(null, { mode, scope, schedType, days, mday, yearly });
+        toast(t ? "Saved · add the next one" : `Added “${title.length > 24 ? title.slice(0, 23) + "…" : title}” · add the next one`);
+        return;
+      }
       closeSheet();
       if (dest && dest !== selected) goTo(dest, true);
       renderAll();
       if (t) toast("Saved");
     };
+    field.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing) return;
+      e.preventDefault();
+      submit(e.shiftKey);
+    });
     field.addEventListener("input", () => {
       if (field.value.includes("\n")) { field.value = field.value.replace(/\n/g, ""); submit(); return; }
       go.disabled = !valid();
       field.style.height = "auto";
       field.style.height = field.scrollHeight + (field.offsetHeight - field.clientHeight) + "px";
     });
-    go.addEventListener("click", submit);
+    go.addEventListener("click", () => submit(false));
     if (!t) setTimeout(() => field.focus(), 60);
     else requestAnimationFrame(() => { field.style.height = "auto"; field.style.height = field.scrollHeight + (field.offsetHeight - field.clientHeight) + "px"; });
   });

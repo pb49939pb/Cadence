@@ -406,3 +406,25 @@ button.hm-cell:active { transform: scale(1.4); }
 .space-toggle button { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 0; border-radius: 99px; font-size: 15px; font-weight: 800; color: rgba(7, 6, 13, 0.75); transition: color 0.3s; }
 .space-toggle button svg { width: 16px; height: 16px; }
 .space-toggle button[aria-checked="true"] { color: #fff; font-weight: 900; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); }
+
+/* ---------- Keyboard hint (only where there's a keyboard and mouse) ---------- */
+.kbd-hint { display: none; margin: -8px 0 0; text-align: center; font-size: 12px; font-weight: 600; color: var(--dim); }
+.kbd-hint kbd { font-family: inherit; font-size: 11px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.15); color: #fff; }
+@media (hover: hover) and (pointer: fine) { .kbd-hint { display: block; } }
+
+/* ---------- Desktop: sheets open as a centered dialog ---------- */
+@media (min-width: 700px) and (min-height: 500px) {
+  .sheet {
+    top: 50%; bottom: auto; translate: 0 -50%;
+    width: min(560px, calc(100% - 48px));
+    max-height: min(88vh, 900px);
+    border-radius: 30px; border-bottom: 1px solid rgba(255,255,255,.1);
+    padding-bottom: 22px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+    animation: dialogIn 0.32s cubic-bezier(.2, 1.2, .3, 1);
+  }
+  .sheet.closing { animation: dialogOut 0.2s ease-in forwards; }
+  .toast { bottom: auto; top: calc(var(--safe-top) + 64px); }
+}
+@keyframes dialogIn { from { opacity: 0; transform: scale(0.94) translateY(12px); } }
+@keyframes dialogOut { to { opacity: 0; transform: scale(0.96); } }
