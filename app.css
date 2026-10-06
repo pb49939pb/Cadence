@@ -443,3 +443,18 @@ button.hm-cell:active { transform: scale(1.4); }
 .home-btn svg { width: 19px; height: 19px; }
 .home-btn:hover { background: rgba(255, 255, 255, 0.16); }
 .home-btn:active { transform: scale(0.9); }
+.skip-btn { width: 100%; }
+
+/* ---------- Goal history ---------- */
+.hm-cell.gn { background: rgba(255,255,255,.07); }
+.hm-cell.gx { background: rgba(255, 77, 90, .55); }
+.hm-cell.g1 { background: rgba(0, 245, 160, .28); }
+.hm-cell.g2 { background: rgba(0, 245, 160, .5); }
+.hm-cell.g3 { background: #2fe3a0; box-shadow: 0 0 5px rgba(0,245,160,.6); }
+.hm-cell.g4 { background: #7dffcb; box-shadow: 0 0 9px rgba(0,245,160,.9); }
+.tl-bar.mixed { background: linear-gradient(90deg, #00f5a0 var(--hitpct), #ff4d5a var(--hitpct)); }
+.tl-item.miss { background: rgba(255, 77, 90, .08); border: 1px dashed rgba(255, 77, 90, .35); }
+.tl-item.miss .tl-dot { background: rgba(255, 77, 90, .25); box-shadow: none; }
+.tl-item.miss .tl-dot svg { color: #ff6b76; }
+.tl-item.miss .tl-title { color: rgba(255,255,255,.75); }
+.tl-item.miss time { color: #ff7b85; }

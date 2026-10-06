@@ -5,15 +5,28 @@
    cadences. Everything lives in localStorage on this device.
    ========================================================= */
 
-const STORE_KEY = "cadence.v1";          // Personal (the original key)
-const SPACE_KEY = "cadence.space";
+/* One codebase, several apps: config.js (loaded first) names the app, its wording and its mode.
+   mode "tasks" (Cadence): finish things; unfinished one-offs carry over as overdue; snooze hides.
+   mode "goals" (Momentum): hit things each period; a period that ends unhit is a miss; skip excuses a period. */
+const CONFIG = window.APP_CONFIG || {};
+const APP_ID = CONFIG.id || "cadence";
+const APP_NAME = CONFIG.name || "Cadence";
+const GOALS = CONFIG.mode === "goals";
+const W = {
+  item: "task", items: "tasks", Item: "Task", Items: "Tasks", done: "done", Done: "Done", left: "left",
+  doneVerb: "checked off", newItem: "New task", add: "Add task", placeholder: "What needs doing?",
+  history: "Past tasks", ...(CONFIG.words || {}),
+};
+
+const STORE_KEY = `${APP_ID}.v1`;          // Personal
+const SPACE_KEY = `${APP_ID}.space`;
 /** Work and Personal are separate task lists, like two accounts. Settings (sound, haptics) are shared. */
 const SPACES = {
   work:     { label: "Work",     icon: "briefcase", colors: ["#00C8FF", "#3D5AFE"] },
   personal: { label: "Personal", icon: "home",      colors: ["#FF3D9A", "#B14DFF"] },
 };
 let space = (() => { try { return localStorage.getItem(SPACE_KEY) === "work" ? "work" : "personal"; } catch { return "personal"; } })();
-const storeKey = (sp = space) => (sp === "work" ? "cadence.work.v1" : STORE_KEY);
+const storeKey = (sp = space) => (sp === "work" ? `${APP_ID}.work.v1` : STORE_KEY);
 const SCOPES = ["day", "week", "month", "year"];
 const META = {
   day:   { tab: "Today", title: "Today",      once: "Today",      every: "Every day",   cadence: "Daily",   unit: "day",   colors: ["#FF2D87", "#FF8A00"], hist: 7,  icon: "sun",      clear: "Day crushed!" },
@@ -143,7 +156,7 @@ function save() {
 /* ---------- Cloud sync (Firebase) ----------
    The local copy keeps the app instant and usable offline; Firestore is the source of truth once signed in.
    save() diffs tasks against what the cloud last had and writes only what changed. */
-const OWNER_KEY = "cadence.owner";        // which account the local copy belongs to
+const OWNER_KEY = `${APP_ID}.owner`;        // which account the local copy belongs to
 let cloud = null, user = null, unsubTasks = null, unsubSettings = null;
 let cloudTasks = new Map();               // id -> JSON of the cloud's version
 let cloudSettings = "";
@@ -184,7 +197,7 @@ async function migrateLocal(uid) {
     const fresh = local.filter((t) => !ids.has(t.id) && !(t.completions.length === 0 && same.has(`${t.scope}|${t.title}`)));
     if (fresh.length) {
       await cloud.commit(uid, "personal", fresh.map(clean), [], existing.length ? null : clean(load("personal").settings));
-      toast(`Moved ${fresh.length} task${fresh.length === 1 ? "" : "s"} from this device to your account`);
+      toast(`Moved ${fresh.length} ${fresh.length === 1 ? W.item : W.items} from this device to your account`);
     }
   }
   try { localStorage.setItem(OWNER_KEY, uid); } catch {}
@@ -200,7 +213,7 @@ function startCloud() {
     if (authOpen) closeSheet();
     setSync("saving");
     try { await cloud.migrateLegacy(u.uid); } catch (e) { console.warn("Moving to the new data layout failed; will retry next open", e); }
-    try { await migrateLocal(u.uid); } catch (e) { console.warn("Migration failed", e); toast("Couldn't move this device's tasks yet. Reopen the app to try again."); }
+    try { await migrateLocal(u.uid); } catch (e) { console.warn("Migration failed", e); toast(`Couldn't move this device's ${W.items} yet. Reopen the app to try again.`); }
     unsubSettings = cloud.watchSettings(u.uid, (s) => {
       if (!s) return;
       cloudSettings = JSON.stringify(s);
@@ -251,7 +264,7 @@ function buildSpaceToggle() {
   }
   const aurora = $(".aurora");
   if (aurora && !$(".space-glow", aurora)) aurora.insertAdjacentHTML("afterbegin", '<i class="space-glow sg-work"></i><i class="space-glow sg-personal"></i>');
-  bar.innerHTML = `<div class="space-toggle" role="radiogroup" aria-label="Task list">
+  bar.innerHTML = `<div class="space-toggle" role="radiogroup" aria-label="${W.Item} list">
       <i class="space-thumb"></i>
       ${["work", "personal"].map((k) => `<button role="radio" data-space="${k}">${icon(SPACES[k].icon)}${SPACES[k].label}</button>`).join("")}
     </div>`;
@@ -307,7 +320,7 @@ function openAuth(message) {
   authOpen = true;
   openSheet(`
     <div class="sheet-head"><h2>Sign in</h2></div>
-    <p class="note auth-lede">Sign in to keep your tasks in sync between your iPhone and Mac. Tasks already on this device come with you.</p>
+    <p class="note auth-lede">Sign in to keep your ${W.items} in sync between your iPhone and Mac. ${W.Items} already on this device come with you.</p>
     <button class="google-btn" data-google>${GOOGLE_LOGO}Continue with Google</button>
     <div class="or"><span>or use email</span></div>
     <form class="auth-form" novalidate>
@@ -356,10 +369,13 @@ function visible(scope, p) {
   return state.tasks.filter((t) => {
     if (t.scope !== scope) return false;
     if (t.repeats) return t.start <= p;
-    if (t.completions.length === 0) return t.start <= p;
+    // Goals don't carry over: a one-off goal belongs to its own period (missed once that period ends).
+    if (t.completions.length === 0) return GOALS ? t.start === p : t.start <= p;
     return effective(t) === p;
   });
 }
+/** Goals: a skipped period (rest day) is excused: it isn't shown as open, isn't a miss and doesn't break streaks. */
+const isSkipped = (t, p) => GOALS && !!t.skips && t.skips.includes(p);
 /* ---------- Scheduled tasks ("every Saturday", "the 4th of every month") ----------
    Stored with scope "dated" and sched = {type:"weekly", days:[6]} | {type:"monthly", day:4}
    | {type:"yearly", month:2, day:15}. Each due date is its own check-off (completion p = that day). */
@@ -413,13 +429,13 @@ function datedItems(scope, p) {
     if (!t.sched) continue;
     if (scope === "day") {
       const k = lastDue(t, today);
-      if (k && (k === today || !isDone(t, k))) out.push({ t, p: k, key: `${t.id}@${k}` });
+      if (k && (k === today || (!GOALS && !isDone(t, k)))) out.push({ t, p: k, key: `${t.id}@${k}` });
     } else if (showsOn(t, scope)) {
       const ws = parseKey(p);
       const inPeriod = dueBetween(t, ws, addPeriods(scope, ws, 1));
       const prev = lastDue(t, keyOf(addDays(ws, -1)));
-      // An overdue one carries into this period until it's done or the next due date arrives.
-      if (prev && !isDone(t, prev) && !inPeriod.some((k) => k <= today)) out.push({ t, p: prev, key: `${t.id}@${prev}` });
+      // Tasks: an overdue one carries into this period until it's done or the next due date arrives.
+      if (!GOALS && prev && !isDone(t, prev) && !inPeriod.some((k) => k <= today)) out.push({ t, p: prev, key: `${t.id}@${prev}` });
       for (const k of inPeriod) out.push({ t, p: k, key: `${t.id}@${k}` });
     }
   }
@@ -466,7 +482,7 @@ function unsnoozeTask(t) {
 /** The day a row was due, if it's past due and not done. */
 function overdueSince(item) {
   const { t, p } = item;
-  if (isDone(t, p)) return null;
+  if (GOALS || isDone(t, p)) return null;
   const today = keyOf(now());
   if (t.sched) {
     const u = snoozedUntil(item);
@@ -486,8 +502,9 @@ function lateText(dueKey) {
 function allItems(scope, p = periodKey(scope)) {
   return visible(scope, p).map((t) => ({ t, p, key: t.id })).concat(datedItems(scope, p));
 }
-const items = (scope, p) => allItems(scope, p).filter((i) => !isSnoozed(i));
+const items = (scope, p) => allItems(scope, p).filter((i) => !isSnoozed(i) && !isSkipped(i.t, i.p));
 function snoozedItems(scope, p = periodKey(scope)) {
+  if (GOALS) return allItems(scope, p).filter((i) => isSkipped(i.t, i.p)); // shown as "N skipped"
   const out = allItems(scope, p).filter(isSnoozed);
   // One-off tasks snoozed into a later period aren't in this period's list, but belong in its Snoozed section.
   const today = keyOf(now());
@@ -504,31 +521,32 @@ function progress(scope, p = periodKey(scope)) {
   const done = v.filter((i) => isDone(i.t, i.p)).length;
   return { done, total: v.length, frac: v.length ? done / v.length : 0 };
 }
-function pastProgress(scope, p) {
+/** Everything that counted in a period that has ended: [{t, k (period or due date), done}]. Skips excluded. */
+function pastRows(scope, p) {
   const end = addPeriods(scope, parseKey(p), 1).getTime();
-  let done = 0, total = 0;
+  const rows = [];
   for (const t of state.tasks) {
     if (t.scope !== scope) continue;
     if (t.repeats) {
-      if (t.start > p || t.createdAt >= end) continue;
-      total++;
-      if (t.completions.some((c) => c.p === p)) done++;
+      if (t.start > p || t.createdAt >= end || isSkipped(t, p)) continue;
+      rows.push({ t, k: p, done: t.completions.some((c) => c.p === p) });
     } else if (effective(t) === p) {
-      total++;
-      if (t.completions.length) done++;
+      rows.push({ t, k: p, done: t.completions.length > 0 });
     }
   }
-  {
-    const from = parseKey(p);
-    for (const t of state.tasks) {
-      if (!t.sched || t.createdAt >= end || (scope !== "day" && !showsOn(t, scope))) continue;
-      for (const k of dueBetween(t, from, new Date(end))) {
-        total++;
-        if (isDone(t, k)) done++;
-      }
+  const from = parseKey(p);
+  for (const t of state.tasks) {
+    if (!t.sched || t.createdAt >= end || (scope !== "day" && !showsOn(t, scope))) continue;
+    for (const k of dueBetween(t, from, new Date(end))) {
+      if (!isSkipped(t, k)) rows.push({ t, k, done: isDone(t, k) });
     }
   }
-  return { done, total, frac: total ? done / total : 0 };
+  return rows;
+}
+function pastProgress(scope, p) {
+  const rows = pastRows(scope, p);
+  const done = rows.filter((r) => r.done).length;
+  return { done, total: rows.length, frac: rows.length ? done / rows.length : 0 };
 }
 function history(scope) {
   const cur = periodKey(scope);
@@ -553,8 +571,9 @@ function taskStreak(t) {
     const today = keyOf(now());
     let k = lastDue(t, today), streak = 0;
     if (k === today && !isDone(t, k)) k = lastDue(t, keyOf(addDays(parseKey(k), -1)));
-    while (k && isDone(t, k) && streak < 400) {
-      streak++;
+    for (let n = 0; k && n < 400; n++) {
+      if (isDone(t, k)) streak++;
+      else if (!isSkipped(t, k)) break; // a skipped due date neither counts nor breaks the streak
       k = lastDue(t, keyOf(addDays(parseKey(k), -1)));
     }
     return streak;
@@ -564,8 +583,9 @@ function taskStreak(t) {
   let streak = done.has(periodKey(t.scope)) ? 1 : 0;
   for (let back = 1; back < 400; back++) {
     const p = periodKeyOffset(t.scope, -back);
-    if (p < t.start || !done.has(p)) break;
-    streak++;
+    if (p < t.start) break;
+    if (done.has(p)) streak++;
+    else if (!isSkipped(t, p)) break;
   }
   return streak;
 }
@@ -843,7 +863,7 @@ function buildPages() {
           </div>
         </header>
         <div class="chips" data-chips></div>
-        <button class="history-btn" data-history>${icon("clock")}<span class="h-label">Past tasks</span><span class="h-sub" data-history-sub></span>${icon("chev", 'class="h-chev"')}</button>
+        <button class="history-btn" data-history>${icon("clock")}<span class="h-label">${W.history}</span><span class="h-sub" data-history-sub></span>${icon("chev", 'class="h-chev"')}</button>
         <div class="overdue-strip" data-overdue hidden></div>
         <div class="list" data-list></div>
         <div class="snoozed" data-snoozed hidden>
@@ -853,7 +873,7 @@ function buildPages() {
         <div class="card empty" data-empty hidden>
           ${icon(m.icon)}
           <h3>${s === "day" ? "Nothing due today" : `Nothing set for this ${m.unit}`}</h3>
-          <p>Tap + to add a task, once or on a ${m.cadence.toLowerCase()} cadence.</p>
+          <p>Tap + to add a ${W.item}, once or on a ${m.cadence.toLowerCase()} cadence.</p>
         </div>
         <div class="charts" data-charts></div>
         ${s === "day" ? `<button class="settings-btn" data-settings>${icon("gear")}Settings &amp; backup</button>` : ""}
@@ -884,7 +904,7 @@ function buildPages() {
   }
   const add = document.createElement("button");
   add.className = "add-btn";
-  add.setAttribute("aria-label", "Add task");
+  add.setAttribute("aria-label", W.add);
   add.innerHTML = icon("plus");
   add.addEventListener("click", () => { Feel.tap(); openAdd(); });
   bar.appendChild(add);
@@ -977,8 +997,9 @@ function renderPage(s) {
   if (late.length) strip.innerHTML = `${icon("alert")}<b>${late.length} overdue</b><span>Oldest ${lateText(late[0])}</span>`;
   $("[data-headline]", page).textContent =
     late.length ? `${late.length} overdue. Knock those out first.` :
-    pr.total === 0 ? "A clean slate." :
+    pr.total === 0 ? (GOALS ? "No goals set yet." : "A clean slate.") :
     left === 0 ? "All clear. Legendary." :
+    GOALS ? (pr.done === 0 ? `${left} to go. Start with the easiest win.` : `${left} to go. Keep the momentum.`) :
     pr.done === 0 ? `${left} to go. First one's the hardest.` :
     `${left} to go. Keep the streak hot.`;
   setText($("[data-pct]", page), Math.round(pr.frac * 100) + "%");
@@ -1000,8 +1021,8 @@ function renderPage(s) {
   }
 
   const chips = [
-    { v: left, l: "left", i: "dashed", col: META[s].colors[0] },
-    { v: pr.done, l: "done", i: "seal", col: "#00F5A0" },
+    { v: left, l: W.left, i: "dashed", col: META[s].colors[0] },
+    { v: pr.done, l: W.done, i: "seal", col: "#00F5A0" },
     s === "day"
       ? { v: dayStreak(), l: "day streak", i: "flame", col: "#FF8A00" }
       : { v: Math.round(elapsed(s) * 100) + "%", l: `of ${META[s].unit} gone`, i: "hourglass", col: META[s].colors[1] },
@@ -1019,7 +1040,7 @@ function renderPage(s) {
   renderList(s, p);
   renderSnoozed(s, p);
   const n = doneSince(startOf(s, now()));
-  $("[data-history-sub]", page).textContent = `${n} done ${s === "day" ? "today" : `this ${META[s].unit}`}`;
+  $("[data-history-sub]", page).textContent = `${n} ${W.done} ${s === "day" ? "today" : `this ${META[s].unit}`}`;
   renderCharts(s, p, pr);
 }
 
@@ -1087,13 +1108,13 @@ function renderSnoozed(s, p) {
   const btn = $("[data-snooze-toggle]", box);
   btn.setAttribute("aria-expanded", String(open));
   btn.classList.toggle("open", open);
-  $("span", btn).textContent = `${rows.length} snoozed`;
+  $("span", btn).textContent = `${rows.length} ${GOALS ? "skipped" : "snoozed"}`;
   const list = $(".snoozed-list", box);
   list.hidden = !open;
   list.innerHTML = rows.map((r) => `
     <button class="snoozed-row" data-open="${esc(r.key)}" style="--hue:${HUES[r.t.hue % HUES.length]}">
       <i class="snz-dot"></i><span class="snz-title">${esc(r.t.title)}</span>
-      <small>Until ${esc(dueLabel(snoozedUntil(r)))}</small>
+      <small>${GOALS ? (r.t.sched ? `Skipped ${esc(dueLabel(r.p))}` : "Skipped") : `Until ${esc(dueLabel(snoozedUntil(r)))}`}</small>
     </button>`).join("");
 }
 
@@ -1310,7 +1331,7 @@ function celebrate(s) {
   Feel.allClear();
   Confetti.cannons();
   const wrap = $("#bannerWrap");
-  wrap.innerHTML = `<div class="banner" style="${scopeVars(s)}">${icon("trophy")}<h2>${META[s].clear}</h2><p>Every ${META[s].unit} task done</p></div>`;
+  wrap.innerHTML = `<div class="banner" style="${scopeVars(s)}">${icon("trophy")}<h2>${META[s].clear}</h2><p>Every ${META[s].unit} ${W.item} ${W.done}</p></div>`;
   const b = wrap.firstElementChild;
   setTimeout(() => b.classList.add("out"), 2600);
   setTimeout(() => { if (wrap.firstElementChild === b) wrap.innerHTML = ""; }, 3000);
@@ -1380,10 +1401,23 @@ function openTaskSheet(key, preset = null) {
   };
   const snoozedNow = item && isSnoozed(item) ? snoozedUntil(item) : null;
 
+  // Goals: skip one period (an excused rest day). One-off goals have nothing to skip.
+  const skipBox = () => {
+    if (!t.repeats) return "";
+    const what = t.sched ? dueLabel(itemP) : { day: "today", week: "this week", month: "this month", year: "this year" }[t.scope];
+    return `<div class="snooze-box">
+      <div class="section-label">${icon("zzz", 'class="lbl-ic"')}Skip</div>
+      ${isSkipped(t, itemP)
+        ? `<div class="snoozed-note">Skipped ${esc(what)}<button class="pill mini" data-unskip>Undo skip</button></div>`
+        : `<button class="pill snz skip-btn" data-skip><span>Skip ${esc(what)}</span><small>A rest ${t.sched || t.scope === "day" ? "day" : t.scope}: not a miss, and your streak stays alive</small></button>`}
+    </div>`;
+  };
+
   openSheet(`
-    ${sheetHead(t ? "Task" : "New task")}
-    <textarea class="field" id="taskTitle" rows="1" placeholder="What needs doing?" enterkeyhint="done" maxlength="120"></textarea>
-    ${t ? `<div class="snooze-box">
+    ${sheetHead(t ? W.Item : W.newItem)}
+    <textarea class="field" id="taskTitle" rows="1" placeholder="${W.placeholder}" enterkeyhint="done" maxlength="120"></textarea>
+    ${t && GOALS ? skipBox() : ""}
+    ${t && !GOALS ? `<div class="snooze-box">
       <div class="section-label">${icon("zzz", 'class="lbl-ic"')}Snooze</div>
       ${snoozedNow ? `<div class="snoozed-note">Snoozed until <b>${esc(dueLabel(snoozedNow))}</b><button class="pill mini" data-unsnooze>Wake it up</button></div>` : ""}
       <div class="pills">${snoozeChoices().map(([l, k]) => `<button class="pill snz" data-snooze="${k}"><span>${l}</span><small>${esc(dueLabel(k))}</small></button>`).join("")}</div>
@@ -1393,9 +1427,9 @@ function openTaskSheet(key, preset = null) {
     <div data-when-wrap><div class="section-label">When</div><div class="pills" data-when></div></div>
     <div data-sched-wrap hidden><div class="section-label">Repeats</div><div class="pills three" data-stype></div><div class="sched-pick" data-spick></div></div>
     <div><div class="section-label">Color</div><div class="swatches" data-swatches></div></div>
-    <button class="cta" id="taskGo" disabled>${t ? icon("check") + "Save changes" : icon("plus") + "Add task"}</button>
-    <p class="kbd-hint"><kbd>Enter</kbd> to ${t ? "save" : "add"} · <kbd>Shift</kbd>+<kbd>Enter</kbd> to ${t ? "save and add a new task" : "add another"}</p>
-    ${t ? `<button class="menu-item red center" data-delete>${icon("trash")}Delete task</button>` : ""}`, scope, (sheet) => {
+    <button class="cta" id="taskGo" disabled>${t ? icon("check") + "Save changes" : icon("plus") + W.add}</button>
+    <p class="kbd-hint"><kbd>Enter</kbd> to ${t ? "save" : "add"} · <kbd>Shift</kbd>+<kbd>Enter</kbd> to ${t ? `save and add a new ${W.item}` : "add another"}</p>
+    ${t ? `<button class="menu-item red center" data-delete>${icon("trash")}Delete ${W.item}</button>` : ""}`, scope, (sheet) => {
     const field = $("#taskTitle", sheet), go = $("#taskGo", sheet);
     field.value = t ? t.title : "";
     const sched = () => schedType === "weekly" ? { type: "weekly", days: [...days].sort() }
@@ -1435,11 +1469,13 @@ function openTaskSheet(key, preset = null) {
       let hint =
         mode === "sched"
           ? (schedType === "weekly" && days.length === 0 ? "Pick at least one day." :
-            `${schedLabel(sc)}. Shows on Today when it's due and on the Week page that week.` +
+            `${schedLabel(sc)}. ${GOALS ? "Shows on Today on those days. Not hitting it that day counts as a miss." : "Shows on Today when it's due and on the Week page that week."}` +
             (schedType !== "weekly" && sc.day > 28 ? " In shorter months it's due on the last day." : ""))
           : mode === "every"
-            ? `Shows up on the ${META[scope].tab} page every ${META[scope].unit}. Check it off each time.`
-            : scope === "day" ? "Shows up today. If you don't finish, it carries over to tomorrow." : `Shows up on the ${META[scope].tab} page until you finish it.`;
+            ? (GOALS ? `A fresh goal every ${META[scope].unit}. Hit it each ${META[scope].unit} to build a streak.` : `Shows up on the ${META[scope].tab} page every ${META[scope].unit}. Check it off each time.`)
+            : GOALS
+              ? (scope === "day" ? "Counts for today only. If you don't hit it today, it's a miss." : `Counts for ${META[scope].once.toLowerCase()}. Hit it any time before the ${META[scope].unit} ends.`)
+              : scope === "day" ? "Shows up today. If you don't finish, it carries over to tomorrow." : `Shows up on the ${META[scope].tab} page until you finish it.`;
       if (cadenceChanged() && t.completions.length) hint += " Changing how often starts its streak and history over.";
       $("[data-hint]", sheet).textContent = hint;
       $("[data-swatches]", sheet).innerHTML = HUES.map((h, i) => `<button class="swatch ${i === hue ? "on" : ""}" data-h="${i}" style="--sw:${h}" aria-label="Color ${i + 1}"></button>`).join("");
@@ -1461,6 +1497,15 @@ function openTaskSheet(key, preset = null) {
       if (!b) return;
       const d = b.dataset;
       if (d.snooze) { finishSnooze(d.snooze); return; }
+      if ("skip" in d || "unskip" in d) {
+        const g = live();
+        g.skips = "skip" in d ? [...new Set([...(g.skips || []), itemP])] : (g.skips || []).filter((k) => k !== itemP);
+        if (!g.skips.length) delete g.skips;
+        save(); Feel.tap(); closeSheet(); renderAll();
+        if ("skip" in d) toast("Skipped. Your streak is safe.", { label: "Undo", run: () => { const x = live(); x.skips = (x.skips || []).filter((k) => k !== itemP); if (!x.skips.length) delete x.skips; save(); renderAll(); } });
+        else toast("Back on your list");
+        return;
+      }
       if ("unsnooze" in d) { unsnoozeTask(live()); save(); Feel.tap(); closeSheet(); renderAll(); toast("Back on your list"); return; }
       if ("delete" in d) {
         b.outerHTML = `<button class="cta danger" data-delete-confirm>${icon("trash")}Yes, delete “${esc(t.title.length > 22 ? t.title.slice(0, 21) + "…" : t.title)}”</button>`;
@@ -1503,6 +1548,7 @@ function openTaskSheet(key, preset = null) {
           t.completions = [];
           delete t.snooze;
           delete t.hideUntil;
+          delete t.skips;
           if (mode === "sched") {
             t.scope = "dated"; t.repeats = true; t.sched = sched(); t.start = keyOf(now());
           } else {
@@ -1548,11 +1594,11 @@ function openSettings() {
     ${sheetHead("Settings")}
     <div class="menu">
       ${user ? `<div class="menu-item account">${icon("info")}<span>Signed in<span class="sub">${esc(user.email || user.displayName || "Your account")}</span></span><button class="pill mini" data-set="signout">Sign out</button></div>` : ""}
-      <button class="menu-item" data-set="sound">${icon("sound")}<span>Sounds<span class="sub">Chimes when you finish tasks</span></span><i class="switch ${state.settings.sound ? "on" : ""}"></i></button>
+      <button class="menu-item" data-set="sound">${icon("sound")}<span>Sounds<span class="sub">Chimes when you finish ${W.items}</span></span><i class="switch ${state.settings.sound ? "on" : ""}"></i></button>
       <button class="menu-item" data-set="haptics">${icon("buzz")}<span>Haptics<span class="sub">Taps on supported phones</span></span><i class="switch ${state.settings.haptics ? "on" : ""}"></i></button>
-      <button class="menu-item" data-set="export">${icon("download")}<span>Save a backup<span class="sub">Download your tasks as a file</span></span></button>
+      <button class="menu-item" data-set="export">${icon("download")}<span>Save a backup<span class="sub">Download your ${W.items} as a file</span></span></button>
       <label class="menu-item">${icon("upload")}<span>Restore a backup<span class="sub">Replaces everything here</span></span><input type="file" accept="application/json,.json" data-import hidden></label>
-      <button class="menu-item red" data-set="erase">${icon("trash")}<span>Erase all ${SPACES[space].label} tasks<span class="sub">Every ${SPACES[space].label.toLowerCase()} task and its history. ${SPACES[space === "work" ? "personal" : "work"].label} is untouched.</span></span></button>
+      <button class="menu-item red" data-set="erase">${icon("trash")}<span>Erase all ${SPACES[space].label} ${W.items}<span class="sub">Every ${SPACES[space].label.toLowerCase()} ${W.item} and its history. ${SPACES[space === "work" ? "personal" : "work"].label} is untouched.</span></span></button>
     </div>
     <p class="note">${icon("info", 'style="width:14px;height:14px;display:inline;vertical-align:-2px"')} ${user ? "Your tasks sync to your account and work offline. Changes made offline sync when you reconnect." : "Sign in to sync your tasks."}</p>`, "day", (sheet) => {
     sheet.addEventListener("click", (e) => {
@@ -1579,7 +1625,7 @@ function openSettings() {
         const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = `cadence-backup-${keyOf(now())}.json`;
+        a.download = `${APP_ID}-backup-${keyOf(now())}.json`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -1609,9 +1655,9 @@ function openSettings() {
         closeSheet();
         for (const s of SCOPES) { cards[s].clear(); $("[data-list]", pages[s]).innerHTML = ""; }
         renderAll();
-        toast(`Restored ${state.tasks.length} tasks`);
+        toast(`Restored ${state.tasks.length} ${W.items}`);
       } catch {
-        toast("That file isn't a Cadence backup.");
+        toast(`That file isn't a ${APP_NAME} backup.`);
       }
     });
   });
@@ -1619,6 +1665,7 @@ function openSettings() {
 
 /* ---------- History (past tasks) ---------- */
 function openHistory() {
+  if (GOALS) return openGoalHistory();
   const evs = completionEvents();
   const today = startOf("day", now());
   const byDay = new Map();
@@ -1707,6 +1754,121 @@ function openHistory() {
   });
 }
 
+/* ---------- Goal history: hits and misses ---------- */
+function openGoalHistory() {
+  const today = startOf("day", now()), todayK = keyOf(today);
+  const evs = completionEvents();
+  const byDay = new Map();
+  const add = (k, kind, e) => {
+    if (!byDay.has(k)) byDay.set(k, { hits: [], misses: [] });
+    byDay.get(k)[kind].push(e);
+  };
+  for (const ev of evs) add(keyOf(new Date(ev.at)), "hits", ev);
+  // Misses: every goal that counted in a finished period and wasn't hit, filed under that period's last day.
+  const WINDOW = 180, from = addDays(today, -WINDOW);
+  for (const scope of SCOPES) {
+    for (let back = 1; back < 400; back++) {
+      const ps = addPeriods(scope, startOf(scope, now()), -back);
+      const pe = addDays(addPeriods(scope, ps, 1), -1);
+      if (pe < from) break;
+      for (const r of pastRows(scope, keyOf(ps))) {
+        if (r.done || (scope !== "day" && r.t.sched)) continue; // scheduled goals are counted once, on their day
+        add(scope === "day" ? r.k : keyOf(pe), "misses", { t: r.t, cad: cadenceOf(r.t), scope });
+      }
+    }
+  }
+  const dayProg = (k) => (k === todayK ? progress("day") : pastProgress("day", k));
+
+  // Stats: 30-day hit rate on daily goals, current and best streak of fully-hit days, all-time hits.
+  let hit30 = 0, tot30 = 0;
+  for (let i = 1; i <= 30; i++) { const pr = pastProgress("day", keyOf(addDays(today, -i))); hit30 += pr.done; tot30 += pr.total; }
+  let best = 0, run = 0;
+  for (let i = 365; i >= 0; i--) {
+    const pr = dayProg(keyOf(addDays(today, -i)));
+    if (pr.total === 0) continue;
+    if (pr.done >= pr.total) { run++; best = Math.max(best, run); } else if (i > 0) run = 0;
+  }
+  const streak = dayStreak();
+
+  // Calendar: last 18 weeks, colored by share of that day's goals hit.
+  const WEEKS = 18;
+  const gridStart = addDays(startOf("week", now()), -7 * (WEEKS - 1));
+  let cells = "", months = "";
+  for (let w = 0; w < WEEKS; w++) {
+    const colStart = addDays(gridStart, w * 7);
+    const first = [0, 1, 2, 3, 4, 5, 6].map((d) => addDays(colStart, d)).find((d) => d.getDate() === 1);
+    months += `<span style="grid-column:${w + 1}">${first ? first.toLocaleDateString(undefined, { month: "short" }) : ""}</span>`;
+    for (let d = 0; d < 7; d++) {
+      const day = addDays(colStart, d), k = keyOf(day);
+      const pos = `grid-column:${w + 1};grid-row:${d + 1}`;
+      if (day > today) { cells += `<i class="hm-cell future" style="${pos}"></i>`; continue; }
+      const pr = dayProg(k);
+      const cls = pr.total === 0 ? "gn" : pr.done >= pr.total ? "g4" : pr.frac >= 0.67 ? "g3" : pr.frac >= 0.34 ? "g2" : pr.frac > 0 ? "g1" : k === todayK ? "gn" : "gx";
+      cells += `<button class="hm-cell ${cls} ${k === todayK ? "today" : ""}" style="${pos}" data-day="${k}" aria-label="${dueLabel(k)}: ${pr.total ? `${pr.done} of ${pr.total} daily goals hit` : "no daily goals"}"></button>`;
+    }
+  }
+
+  const dayTitle = (k) => k === todayK ? "Today" : k === keyOf(addDays(today, -1)) ? "Yesterday" : dueLabel(k);
+  const kindLabel = (t) => t.sched ? schedLabel(t.sched) : t.repeats ? META[t.scope].cadence : `One-time goal${t.scope === "day" ? "" : ` · ${META[t.scope].once.toLowerCase()}`}`;
+  const days = [...byDay.keys()].sort().reverse();
+  const group = (k) => {
+    const { hits, misses } = byDay.get(k);
+    const total = hits.length + misses.length;
+    return `<section class="tl-group" id="tl-${k}">
+      <div class="tl-day"><b>${esc(dayTitle(k))}</b><span>${hits.length} hit${misses.length ? ` · ${misses.length} missed` : ""}</span><i class="tl-bar ${misses.length ? "mixed" : ""}" style="width:${Math.min(100, total * 12)}%;--hitpct:${total ? (hits.length / total) * 100 : 100}%"></i></div>
+      ${hits.map((ev) => `<div class="tl-item" style="--hue:${HUES[ev.t.hue % HUES.length]};${scopeVars(ev.cad)}">
+        <i class="tl-dot">${icon("check")}</i>
+        <div class="tl-text"><div class="tl-title">${esc(ev.t.title)}</div><div class="tl-kind"><i class="dot"></i>${esc(kindLabel(ev.t))}</div></div>
+        <time>${new Date(ev.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>
+      </div>`).join("")}
+      ${misses.map((m) => `<div class="tl-item miss" style="${scopeVars(m.cad)}">
+        <i class="tl-dot">${icon("close")}</i>
+        <div class="tl-text"><div class="tl-title">${esc(m.t.title)}</div><div class="tl-kind"><i class="dot"></i>${esc(kindLabel(m.t))}</div></div>
+        <time>Missed${m.scope !== "day" ? ` this ${META[m.scope].unit}` : ""}</time>
+      </div>`).join("")}
+    </section>`;
+  };
+  let shown = 0;
+  const PAGE = 21;
+
+  openSheet(`
+    ${sheetHead(W.history)}
+    <div class="h-stats">
+      <div class="h-stat" style="--col:#00F5A0"><b>${tot30 ? Math.round((hit30 / tot30) * 100) + "%" : "–"}</b><span>hit rate</span><small>last 30 days</small></div>
+      <div class="h-stat" style="--col:#FF8A00"><b>${streak}</b><span>streak</span><small>days, all hit</small></div>
+      <div class="h-stat" style="--col:${META.year.colors[1]}"><b>${best}</b><span>best</span><small>day streak</small></div>
+      <div class="h-stat" style="--col:${META.week.colors[0]}"><b>${evs.length}</b><span>goals hit</span><small>all time</small></div>
+    </div>
+    <div class="heatmap-wrap">
+      <div class="hm-months" style="grid-template-columns:repeat(${WEEKS},1fr)">${months}</div>
+      <div class="heatmap" style="grid-template-columns:repeat(${WEEKS},1fr)">${cells}</div>
+      <div class="hm-legend"><span>Missed</span><i class="hm-cell gx"></i><i class="hm-cell g1"></i><i class="hm-cell g2"></i><i class="hm-cell g3"></i><i class="hm-cell g4"></i><span>All hit</span></div>
+    </div>
+    <div class="timeline" data-timeline>${days.length ? "" : `<div class="chart-empty">No goal history yet. Hit (or miss) a goal and it shows up here.</div>`}</div>
+    <button class="menu-item center" data-more hidden>Show earlier days</button>`, "day", (sheet) => {
+    const tl = $("[data-timeline]", sheet), more = $("[data-more]", sheet);
+    const showMore = (upTo) => {
+      const next = Math.max(shown + PAGE, upTo || 0);
+      tl.insertAdjacentHTML("beforeend", days.slice(shown, next).map(group).join(""));
+      shown = Math.min(next, days.length);
+      more.hidden = shown >= days.length;
+    };
+    showMore();
+    more.onclick = () => showMore();
+    sheet.addEventListener("click", (e) => {
+      const c = e.target.closest("[data-day]");
+      if (!c) return;
+      Feel.tap();
+      const k = c.dataset.day, i = days.indexOf(k);
+      if (i < 0) { toast(`No goals hit or missed on ${dueLabel(k)}`); return; }
+      if (i >= shown) showMore(i + 1);
+      const g = $(`#tl-${k}`, sheet);
+      g.scrollIntoView({ behavior: "smooth", block: "start" });
+      g.classList.remove("flash-row"); void g.offsetWidth; g.classList.add("flash-row");
+    });
+  });
+}
+
 /* ---------- Charts (SVG) ---------- */
 function card(title, sub, ic, col, inner) {
   return `<div class="card"><div class="card-head" style="--col:${col}">${icon(ic)}<h2>${title}</h2>${sub ? `<small>${sub}</small>` : ""}</div>${inner}</div>`;
@@ -1723,9 +1885,9 @@ function renderCharts(s, p, pr) {
   if (s === "day") {
     const hours = todayByHour();
     box.innerHTML =
-      card("Today's rhythm", "check-offs by hour", "pulse", m.colors[0], Object.keys(hours).length ? hourChart(hours) : `<div class="chart-empty">Your first check-off today lights this up.</div>`) +
+      card(GOALS ? "When you hit goals" : "Today's rhythm", `${W.doneVerb} by hour`, "pulse", m.colors[0], Object.keys(hours).length ? hourChart(hours) : `<div class="chart-empty">${GOALS ? "Your first goal hit today" : "Your first check-off today"} lights this up.</div>`) +
       `<div class="row2">${card("Split", "", "pie", m.colors[1], donut(pr, s))}${card("Cadences", "", "rings", META.month.colors[0], cadenceBars())}</div>` +
-      card("Last 7 days", "% of daily tasks done", "bars", m.colors[0], historyChart(s, hist));
+      card("Last 7 days", `% of daily ${W.items} ${W.done}`, "bars", m.colors[0], historyChart(s, hist));
   } else {
     const el = elapsed(s);
     const diff = Math.round((pr.frac - el) * 100);
@@ -1734,13 +1896,13 @@ function renderCharts(s, p, pr) {
         <div class="pace">${donut(pr, s)}
           <div class="pace-bars">
             ${paceRow("Time gone", el, "rgba(255,255,255,.35)")}
-            ${paceRow("Done", pr.frac, `linear-gradient(90deg, ${m.colors[0]}, ${m.colors[1]})`)}
+            ${paceRow(W.Done, pr.frac, `linear-gradient(90deg, ${m.colors[0]}, ${m.colors[1]})`)}
             <div class="pace-verdict" style="color:${diff >= 0 ? m.colors[0] : "rgba(255,255,255,.7)"}">${pr.total === 0 ? `${icon("info")}Nothing scheduled yet` : `${icon(diff >= 0 ? "hare" : "tortoise")}${diff >= 0 ? `${diff} points ahead of pace` : `${-diff} points behind pace`}`}</div>
           </div>
         </div>`) +
-      card(s === "year" ? "This year, month by month" : `This ${m.unit}, day by day`, "tasks done", "bars", m.colors[1], stackedChart(`in-${s}`, insideBuckets(s), s === "month" ? 5 : 1)) +
-      card(`Completed per ${m.unit}`, `last ${PER_COUNT[s]}`, "bars", m.colors[0], stackedChart(`per-${s}`, bucketsFor(s, PER_COUNT[s]), 1, true)) +
-      card(`Last ${m.hist} ${m.unit}s`, "% of tasks done", "bars", m.colors[0], historyChart(s, hist));
+      card(s === "year" ? "This year, month by month" : `This ${m.unit}, day by day`, `${W.items} ${W.done}`, "bars", m.colors[1], stackedChart(`in-${s}`, insideBuckets(s), s === "month" ? 5 : 1)) +
+      card(GOALS ? `Goals hit per ${m.unit}` : `Completed per ${m.unit}`, `last ${PER_COUNT[s]}`, "bars", m.colors[0], stackedChart(`per-${s}`, bucketsFor(s, PER_COUNT[s]), 1, true)) +
+      card(`Last ${m.hist} ${m.unit}s`, `% of ${W.items} ${W.done}`, "bars", m.colors[0], historyChart(s, hist));
   }
 }
 
@@ -1783,7 +1945,7 @@ function stackedChart(id, buckets, labelEvery = 1, avg = false) {
   });
   for (const c of SCOPES) defs += `<linearGradient id="${id}-g-${c}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${META[c].colors[0]}"/><stop offset="1" stop-color="${META[c].colors[1]}"/></linearGradient>`;
   const total = buckets.reduce((n, b) => n + b.total, 0);
-  if (!total) return `<div class="chart-empty">Nothing checked off yet. Finished tasks stack up here.</div>`;
+  if (!total) return `<div class="chart-empty">Nothing ${W.doneVerb} yet. ${GOALS ? "Goals you hit" : "Finished tasks"} stack up here.</div>`;
   return `<svg class="chart" viewBox="0 0 ${W} ${H}"><defs>${defs}</defs>${out}</svg>${cadenceLegend()}`;
 }
 
@@ -1898,7 +2060,7 @@ function boot() {
     refresh();
   });
 
-  if (location.hostname.endsWith("github.io")) {
+  if (APP_ID === "cadence" && location.hostname.endsWith("github.io")) {
     const note = document.createElement("a");
     note.className = "moved-banner";
     note.href = "https://pat-dashboard-eb494.web.app/cadence/";

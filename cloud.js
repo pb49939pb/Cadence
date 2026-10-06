@@ -33,9 +33,11 @@ try {
 
 const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 // One Firebase project serves several personal apps: every app keeps its data under apps/{app}/users/{uid}.
-const APP = "cadence";
+const CONFIG = window.APP_CONFIG || {};
+const APP = CONFIG.id || "cadence";
+const COLS = CONFIG.collections || { personal: "tasks", work: "workTasks" };
 const base = (uid) => ["apps", APP, "users", uid];
-const tasksCol = (uid, space) => collection(db, ...base(uid), space === "work" ? "workTasks" : "tasks");
+const tasksCol = (uid, space) => collection(db, ...base(uid), space === "work" ? COLS.work : COLS.personal);
 const settingsDoc = (uid) => doc(db, ...base(uid), "meta", "settings");
 const summaryDoc = (uid) => doc(db, ...base(uid), "meta", "summary"); // read by the dashboard at /
 
@@ -89,6 +91,7 @@ window.CadenceCloud = {
    */
   async migrateLegacy(uid) {
     let moved = 0;
+    if (!CONFIG.legacyMove) return moved; // only Cadence ever used the old layout
     for (const name of ["tasks", "workTasks"]) {
       const old = await getDocsFromServer(collection(db, "users", uid, name));
       if (old.empty) continue;
