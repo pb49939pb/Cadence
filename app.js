@@ -1487,11 +1487,11 @@ function openTaskSheet(key) {
       if (field.value.includes("\n")) { field.value = field.value.replace(/\n/g, ""); submit(); return; }
       go.disabled = !valid();
       field.style.height = "auto";
-      field.style.height = field.scrollHeight + 3 + "px";
+      field.style.height = field.scrollHeight + (field.offsetHeight - field.clientHeight) + "px";
     });
     go.addEventListener("click", submit);
     if (!t) setTimeout(() => field.focus(), 60);
-    else requestAnimationFrame(() => { field.style.height = "auto"; field.style.height = field.scrollHeight + 3 + "px"; });
+    else requestAnimationFrame(() => { field.style.height = "auto"; field.style.height = field.scrollHeight + (field.offsetHeight - field.clientHeight) + "px"; });
   });
 }
 

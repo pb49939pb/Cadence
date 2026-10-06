@@ -210,6 +210,7 @@ svg { display: block; }
   display: flex; flex-direction: column; gap: 20px;
 }
 .sheet.closing { animation: sheetOut 0.25s ease-in forwards; }
+.sheet > * { flex-shrink: 0; } /* tall sheets scroll; never squash fields */
 @keyframes sheetIn { from { transform: translateY(100%); } }
 @keyframes sheetOut { to { transform: translateY(100%); } }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
