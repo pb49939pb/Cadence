@@ -467,7 +467,7 @@ const itemFromKey = (key) => {
   return t ? { t, p: key.includes("@") ? key.split("@")[1] : periodKey(t.scope), key } : null;
 };
 /** Only things due today (or carried into today) and not yet done can be pushed. */
-const canPush = (item) => !!item && !isPastView("day") && !isDone(item.t, item.p) && (item.t.sched ? item.p <= keyOf(now()) : item.t.scope === "day");
+const canPush = (item) => !!item && viewOffset.day === 0 && !isDone(item.t, item.p) && (item.t.sched ? item.p <= keyOf(now()) : item.t.scope === "day");
 
 /** Push several rows; returns a single undo that restores them exactly. */
 function pushItems(list) {
@@ -579,6 +579,8 @@ function progress(scope, p = periodKey(scope)) {
    viewOffset[scope] = how many periods back that page shows (0 = now). */
 const viewOffset = { day: 0, week: 0, month: 0, year: 0 };
 const isPastView = (s) => viewOffset[s] > 0;
+const isFutureView = (s) => viewOffset[s] < 0;   // negative offsets look ahead
+const FUTURE_SPAN = { day: 14, week: 8, month: 6, year: 2 };
 const viewKey = (s) => (viewOffset[s] ? periodKeyOffset(s, -viewOffset[s]) : periodKey(s));
 const HISTORY_SPAN = { day: 30, week: 12, month: 12, year: 5 };
 
@@ -604,6 +606,25 @@ function pastViewItems(scope, p) {
   }
   return out;
 }
+/** What's planned for a future period: [{t, p, key}]. Nothing in it can be done yet. */
+function futureViewItems(scope, p) {
+  const out = [];
+  for (const t of state.tasks) {
+    if (t.scope !== scope) continue;
+    if (t.repeats) {
+      if (t.start <= p && !isSkipped(t, p)) out.push({ t, p, key: `${t.id}@${p}` });
+    } else if (!t.completions.length && (GOALS ? t.start === p : t.start <= p)) {
+      out.push({ t, p, key: `${t.id}@${p}` }); // tasks carry over until done; goals belong to their own period
+    }
+  }
+  const from = parseKey(p), end = addPeriods(scope, from, 1);
+  for (const t of state.tasks) {
+    if (!t.sched || (scope !== "day" && !showsOn(t, scope))) continue;
+    for (const k of dueBetween(t, from, end)) if (!isSkipped(t, k)) out.push({ t, p: k, key: `${t.id}@${k}` });
+  }
+  return out;
+}
+
 /** Done at the time? A one-off counts as done in a past period only if it was finished in that period. */
 const doneThen = (i) => (i.t.repeats ? isDone(i.t, i.p) : !!i.t.completions[0] && i.t.completions[0].p === i.p);
 
@@ -974,7 +995,10 @@ function buildPages() {
       Feel.tap();
       stripOpen[s] = !stripOpen[s];
       renderStrip(s);
-      if (stripOpen[s]) $("[data-strip] .on", sec)?.scrollIntoView({ inline: "center", block: "nearest" });
+      if (stripOpen[s]) {
+        const on = $("[data-strip] .on", sec), strip = $("[data-strip]", sec);
+        if (on) strip.scrollLeft = on.offsetLeft - strip.clientWidth / 2 + on.offsetWidth / 2;
+      }
     });
     $("[data-strip]", sec).addEventListener("click", (e) => {
       const b = e.target.closest("[data-offset]");
@@ -1092,6 +1116,7 @@ function viewTitle(s, off = viewOffset[s]) {
   if (!off) return META[s].title;
   const k = periodKeyOffset(s, -off);
   if (off === 1) return { day: "Yesterday", week: "Last week", month: "Last month", year: "Last year" }[s];
+  if (off === -1) return { day: "Tomorrow", week: "Next week", month: "Next month", year: "Next year" }[s];
   const d = parseKey(k);
   if (s === "day") return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   if (s === "week") return `Week of ${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
@@ -1104,15 +1129,24 @@ function renderStrip(s) {
   page.classList.toggle("strip-open", stripOpen[s]);
   strip.hidden = !stripOpen[s];
   if (!stripOpen[s]) return;
+  // Oldest on the left, then now, then upcoming on the right.
   const chips = [];
-  for (let off = 0; off < HISTORY_SPAN[s]; off++) {
+  for (let off = HISTORY_SPAN[s] - 1; off >= -FUTURE_SPAN[s]; off--) {
     const k = off ? periodKeyOffset(s, -off) : periodKey(s);
-    const rows = off ? pastViewItems(s, k) : items(s, k);
-    const done = rows.filter(off ? doneThen : (i) => isDone(i.t, i.p)).length;
-    const pct = rows.length ? Math.round((done / rows.length) * 100) : null;
-    const label = off === 0 ? META[s].tab : s === "day" && off < 7 ? (off === 1 ? "Yesterday" : parseKey(k).toLocaleDateString(undefined, { weekday: "short" })) : viewTitle(s, off).replace("Week of ", "");
-    chips.push(`<button class="pchip ${off === viewOffset[s] ? "on" : ""}" data-offset="${off}" style="--pct:${pct ?? 0}%">
-      <b>${esc(label)}</b><small>${pct === null ? "–" : pct + "%"}</small><i class="pbar"></i></button>`);
+    let small, pct = 0;
+    if (off < 0) {
+      const n = futureViewItems(s, k).length;
+      small = n ? `${n} planned` : "–";
+    } else {
+      const rows = off ? pastViewItems(s, k) : items(s, k);
+      const done = rows.filter(off ? doneThen : (i) => isDone(i.t, i.p)).length;
+      pct = rows.length ? Math.round((done / rows.length) * 100) : 0;
+      small = rows.length ? pct + "%" : "–";
+    }
+    const near = s === "day" && Math.abs(off) < 7 && Math.abs(off) > 1;
+    const label = off === 0 ? META[s].tab : near ? parseKey(k).toLocaleDateString(undefined, { weekday: "short" }) : viewTitle(s, off).replace("Week of ", "");
+    chips.push(`<button class="pchip ${off === viewOffset[s] ? "on" : ""} ${off < 0 ? "ahead" : ""} ${off === 0 ? "now" : ""}" data-offset="${off}" style="--pct:${pct}%">
+      <b>${esc(label)}</b><small>${esc(small)}</small><i class="pbar"></i></button>`);
   }
   strip.innerHTML = chips.join("");
 }
@@ -1129,16 +1163,19 @@ function setView(s, off) {
 
 function renderPage(s) {
   const page = pages[s];
-  const past = isPastView(s);
+  const future = isFutureView(s);
+  const past = isPastView(s) || future; // "past" here means "not now": a fixed list instead of today's live one
   const p = viewKey(s);
-  const pastRowsNow = past ? pastViewItems(s, p) : null;
-  const pr = past
+  const pastRowsNow = future ? futureViewItems(s, p) : past ? pastViewItems(s, p) : null;
+  const pr = future ? { done: 0, total: pastRowsNow.length, frac: 0 }
+    : past
     ? (() => { const done = pastRowsNow.filter(doneThen).length; return { done, total: pastRowsNow.length, frac: pastRowsNow.length ? done / pastRowsNow.length : 0 }; })()
     : progress(s, p);
   const left = pr.total - pr.done;
 
   $("[data-title]", page).textContent = viewTitle(s);
   page.classList.toggle("past", past);
+  page.classList.toggle("future", future);
   $("[data-sub]", page).textContent = periodTitle(s, p);
   $("[data-back-now]", page).hidden = !past;
   renderStrip(s);
@@ -1147,6 +1184,7 @@ function renderPage(s) {
   strip.hidden = late.length === 0;
   if (late.length) strip.innerHTML = `${icon("alert")}<b>${late.length} overdue</b><span>Oldest ${lateText(late[0])}</span>`;
   $("[data-headline]", page).textContent =
+    future ? (pr.total === 0 ? "Nothing planned yet. Tap + to plan something." : `${pr.total} ${pr.total === 1 ? W.item : W.items} planned.`) :
     past ? (pr.total === 0 ? `Nothing was on the list.` : left === 0 ? `Everything ${W.done}. Nice.` : `${pr.done} of ${pr.total} ${W.done}${GOALS ? `, ${left} missed` : ""}. Tap a circle to fix the record.`) :
     late.length ? `${late.length} overdue. Knock those out first.` :
     pr.total === 0 ? (GOALS ? "No goals set yet." : "A clean slate.") :
@@ -1173,9 +1211,11 @@ function renderPage(s) {
   }
 
   const chips = [
-    { v: left, l: past ? (GOALS ? "missed" : "not done") : W.left, i: "dashed", col: META[s].colors[0] },
+    { v: left, l: future ? "planned" : past ? (GOALS ? "missed" : "not done") : W.left, i: "dashed", col: META[s].colors[0] },
     { v: pr.done, l: W.done, i: "seal", col: "#00F5A0" },
-    past
+    future
+      ? { v: String(-viewOffset[s]), l: `${META[s].unit}${viewOffset[s] === -1 ? "" : "s"} away`, i: "clock", col: META[s].colors[1] }
+      : past
       ? { v: Math.round(pr.frac * 100) + "%", l: W.done, i: "hourglass", col: META[s].colors[1] }
       : s === "day"
       ? { v: dayStreak(), l: "day streak", i: "flame", col: "#FF8A00" }
@@ -1305,8 +1345,8 @@ function createCard(key) {
 function updateCard(row, item, s, p) {
   const { t } = item;
   const el = $(".task", row);
-  const past = isPastView(s);
-  const done = past ? doneThen(item) : isDone(t, item.p);
+  const past = isPastView(s) || isFutureView(s);
+  const done = isFutureView(s) ? false : past ? doneThen(item) : isDone(t, item.p);
   el.style.setProperty("--hue", HUES[t.hue % HUES.length]);
   el.classList.toggle("done", done);
   const hit = $(".orb-hit", el);
@@ -1484,6 +1524,7 @@ function toggle(key, el) {
   const page = el.closest(".page");
   const s = page ? page.dataset.scope : colorScope(t);
   const p = key.includes("@") ? key.split("@")[1] : periodKey(t.scope);
+  if (isFutureView(s)) { Feel.undo(); toast(`You can check this off once it's due.`); return; }
   const past = isPastView(s);
   if (past ? doneThen({ t, p }) : isDone(t, p)) {
     t.completions = t.repeats ? t.completions.filter((c) => c.p !== p) : [];
@@ -1742,7 +1783,9 @@ function openTaskSheet(key, preset = null) {
           state.tasks.push(n);
           dest = dueOn(n, now()) ? "day" : n.sched.type === "weekly" ? "week" : n.sched.type === "monthly" ? "month" : "year";
         } else {
-          state.tasks.push(makeTask(title, scope, mode === "every", hue));
+          const n = makeTask(title, scope, mode === "every", hue);
+          if (mode === "once" && isFutureView(scope)) n.start = viewKey(scope); // planning ahead from a future view
+          state.tasks.push(n);
         }
       } else {
         const changed = cadenceChanged();

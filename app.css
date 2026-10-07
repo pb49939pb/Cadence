@@ -477,7 +477,7 @@ button.hm-cell:active { transform: scale(1.4); }
 .page.strip-open .title-caret { transform: rotate(-90deg); }
 .page.past .hero h1 { font-size: clamp(28px, 8vw, 36px); }
 .back-now { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; padding: 7px 12px; border-radius: 99px; font-size: 13px; font-weight: 800; color: var(--ink); background: linear-gradient(135deg, var(--a), var(--b)); }
-.back-now svg { width: 14px; height: 14px; transform: rotate(180deg); }
+.back-now svg { width: 14px; height: 14px; }
 .page.past .ring-wrap { opacity: 0.85; }
 .period-strip { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; margin: -6px -2px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
 .period-strip::-webkit-scrollbar { display: none; }
@@ -487,3 +487,8 @@ button.hm-cell:active { transform: scale(1.4); }
 .pchip .pbar { position: absolute; left: 0; bottom: 0; height: 4px; width: var(--pct); background: linear-gradient(90deg, var(--a), var(--b)); }
 .pchip.on { background: linear-gradient(135deg, color-mix(in srgb, var(--a) 35%, transparent), color-mix(in srgb, var(--b) 25%, transparent)); border-color: var(--a); }
 .pchip.on small { color: #fff; }
+.page.future .back-now svg { transform: rotate(180deg); }
+.pchip.ahead { border-style: dashed; }
+.pchip.ahead small { color: color-mix(in srgb, var(--a) 70%, #fff); }
+.pchip.now:not(.on) { border-color: color-mix(in srgb, var(--a) 55%, transparent); }
+.page.future .task .orb { border-style: dashed; opacity: 0.7; }
