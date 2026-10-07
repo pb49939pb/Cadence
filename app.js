@@ -76,6 +76,7 @@ const ICON = {
   briefcase: '<rect x="3" y="7" width="18" height="13" rx="3"/><path d="M8.5 7V5.5A1.5 1.5 0 0 1 10 4h4a1.5 1.5 0 0 1 1.5 1.5V7M3 12.5h18"/>',
   home: '<path d="M4 11l8-7 8 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
   grid: '<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>',
+  arrowRight: '<path d="M5 12h13M13 6l6 6-6 6" stroke-width="2.6"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5" stroke-width="2.6"/>',
 };
 const icon = (name, extra = "") =>
@@ -454,6 +455,58 @@ function snoozedUntil(item) {
   return t.snooze && t.snooze.p === p ? t.snooze.until : null;
 }
 const isSnoozed = (item) => { const u = snoozedUntil(item); return !!u && u > keyOf(now()) && !isDone(item.t, item.p); };
+
+/* ---------- Push to tomorrow ----------
+   Tasks: snooze until tomorrow (one-offs move to tomorrow; a repeating/scheduled item leaves today and
+   comes back due tomorrow, not overdue). Goals: one-offs move to tomorrow; repeating goals come back
+   tomorrow anyway, so today is skipped (excused, streak safe). */
+const tomorrowKey = () => keyOf(addDays(startOf("day", now()), 1));
+const itemFromKey = (key) => {
+  const t = state.tasks.find((x) => x.id === taskIdOf(key));
+  return t ? { t, p: key.includes("@") ? key.split("@")[1] : periodKey(t.scope), key } : null;
+};
+/** Only things due today (or carried into today) and not yet done can be pushed. */
+const canPush = (item) => !!item && !isDone(item.t, item.p) && (item.t.sched ? item.p <= keyOf(now()) : item.t.scope === "day");
+
+/** Push several rows; returns a single undo that restores them exactly. */
+function pushItems(list) {
+  const before = list.map((i) => JSON.parse(JSON.stringify(i.t)));
+  const tmr = tomorrowKey();
+  let skipped = 0, moved = 0;
+  for (const { t, p } of list) {
+    if (GOALS) {
+      if (t.repeats) { t.skips = [...new Set([...(t.skips || []), p])]; skipped++; }
+      else { t.start = periodKey(t.scope, parseKey(tmr)); moved++; }
+    } else {
+      snoozeTask(t, p, tmr);
+      moved++;
+    }
+  }
+  const undo = () => {
+    for (const old of before) {
+      const i = state.tasks.findIndex((x) => x.id === old.id);
+      if (i >= 0) state.tasks[i] = old;
+    }
+    save();
+    renderAll();
+  };
+  return { undo, moved, skipped };
+}
+function pushToast(r, n) {
+  const what = n === 1 ? W.item : `${n} ${W.items}`;
+  const msg = GOALS && r.skipped && !r.moved ? `Skipped today. ${n === 1 ? "It's" : "They're"} back tomorrow, streak safe.`
+    : GOALS && r.skipped ? `Pushed to tomorrow (repeating goals skipped for today)`
+    : `Pushed ${what} to tomorrow`;
+  toast(msg, { label: "Undo", run: () => { r.undo(); Feel.tap(); } });
+}
+function pushKeys(keys) {
+  const list = keys.map(itemFromKey).filter(canPush);
+  if (!list.length) return;
+  const r = pushItems(list);
+  save();
+  renderAll();
+  pushToast(r, list.length);
+}
 
 function snoozeTask(t, p, until) {
   const before = { start: t.start, hideUntil: t.hideUntil, snooze: t.snooze };
@@ -866,6 +919,7 @@ function buildPages() {
         <button class="history-btn" data-history>${icon("clock")}<span class="h-label">${W.history}</span><span class="h-sub" data-history-sub></span>${icon("chev", 'class="h-chev"')}</button>
         <div class="overdue-strip" data-overdue hidden></div>
         <div class="list" data-list></div>
+        ${s === "day" && !GOALS ? `<button class="push-all" data-push-all hidden>${icon("arrowRight")}<span></span></button>` : ""}
         <div class="snoozed" data-snoozed hidden>
           <button class="snoozed-toggle" data-snooze-toggle aria-expanded="false">${icon("zzz")}<span></span>${icon("chev", 'class="snz-chev"')}</button>
           <div class="snoozed-list" hidden></div>
@@ -881,6 +935,8 @@ function buildPages() {
     pager.appendChild(sec);
     pages[s] = sec;
     $("[data-history]", sec).addEventListener("click", () => { Feel.tap(); openHistory(); });
+    const pa = $("[data-push-all]", sec);
+    if (pa) pa.addEventListener("click", () => pushKeys(items("day").filter(canPush).map((i) => i.key)));
     $("[data-snoozed]", sec).addEventListener("click", (e) => {
       const row = e.target.closest("[data-open]");
       if (row) { Feel.tap(); openTaskSheet(row.dataset.open); return; }
@@ -1039,6 +1095,12 @@ function renderPage(s) {
 
   renderList(s, p);
   renderSnoozed(s, p);
+  const pa = $("[data-push-all]", page);
+  if (pa) {
+    const n = items("day").filter(canPush).length;
+    pa.hidden = n < 2;
+    $("span", pa).textContent = `Move ${n} unfinished to tomorrow`;
+  }
   const n = doneSince(startOf(s, now()));
   $("[data-history-sub]", page).textContent = `${n} ${W.done} ${s === "day" ? "today" : `this ${META[s].unit}`}`;
   renderCharts(s, p, pr);
@@ -1123,6 +1185,7 @@ function createCard(key) {
   row.className = "swipe-row";
   row.dataset.id = key;
   row.innerHTML = `
+    <button class="swipe-push" tabindex="-1" aria-hidden="true"><span>Tomorrow</span>${icon("arrowRight")}</button>
     <button class="swipe-del" tabindex="-1" aria-hidden="true">${icon("trash")}<span>Delete</span></button>
     <div class="task" data-id="${esc(key)}" tabindex="0" role="group">
       <div class="sweep"></div>
@@ -1164,12 +1227,15 @@ function updateCard(row, item, s, p) {
 }
 const badge = (text, i, col, cls = "") => `<span class="badge ${cls}" style="--col:${col}">${icon(i)}${esc(text)}</span>`;
 
-/* The circle completes a task; tapping anywhere else on the card opens it. Swipe left deletes. */
+/* The circle completes a task; tapping anywhere else on the card opens it.
+   Swipe left deletes; on the Today page, swipe right pushes to tomorrow. */
 const OPEN_X = -96;      // resting offset when the Delete button is showing
+const OPEN_PUSH = 128;   // resting offset when the Tomorrow button is showing
 let openRow = null;      // { row, close } for the one row swiped open
 
 function attachPress(el, row) {
-  const del = $(".swipe-del", row);
+  const del = $(".swipe-del", row), push = $(".swipe-push", row);
+  const pushable = () => el.closest(".page")?.dataset.scope === "day" && canPush(itemFromKey(el.dataset.id));
   let startX = 0, startY = 0, down = false; // down: a finger or mouse button is pressed on this card
   let mode = null;       // null until we know if this is a tap, a scroll or a swipe
   let base = 0, offset = 0, armed = false, swallowClick = false;
@@ -1178,8 +1244,9 @@ function attachPress(el, row) {
     offset = x;
     el.style.transition = animate ? "transform .32s cubic-bezier(.2,1.1,.3,1)" : "none";
     el.style.transform = x ? `translateX(${x}px)` : "";
-    del.style.transition = animate ? "opacity .32s" : "none";
-    del.style.opacity = Math.min(1, -x / 60);
+    del.style.transition = push.style.transition = animate ? "opacity .32s" : "none";
+    del.style.opacity = Math.max(0, Math.min(1, -x / 60));
+    push.style.opacity = Math.max(0, Math.min(1, x / 60));
   };
   const close = () => { setOffset(0, true); base = 0; if (openRow && openRow.row === row) openRow = null; };
 
@@ -1208,12 +1275,13 @@ function attachPress(el, row) {
     }
     if (mode !== "swipe") return;
     let x = base + dx;
-    if (x > 0) x = x / 4; // resist swiping right
+    if (x > 0 && !pushable()) x = x / 4; // resist swiping right when there's nothing to push
     setOffset(x, false);
-    const nowArmed = -x > el.offsetWidth * 0.45;
+    const nowArmed = Math.abs(x) > el.offsetWidth * 0.45 ? (x < 0 ? "delete" : "push") : false;
     if (nowArmed !== armed) {
       armed = nowArmed;
-      row.classList.toggle("armed", armed);
+      row.classList.toggle("armed", armed === "delete");
+      row.classList.toggle("armed-push", armed === "push");
       if (armed) Feel.tap();
     }
   });
@@ -1222,11 +1290,16 @@ function attachPress(el, row) {
     el.classList.remove("pressing");
     if (mode !== "swipe") return;
     swallowClick = true;
-    row.classList.remove("armed");
-    if (armed) { deleteWithSwipe(el.dataset.id, row, el); return; }
+    row.classList.remove("armed", "armed-push");
+    if (armed === "delete") { deleteWithSwipe(el.dataset.id, row, el); return; }
+    if (armed === "push") { pushWithSwipe(el.dataset.id, row, el); return; }
     if (offset < OPEN_X / 1.4) {
       setOffset(OPEN_X, true);
       base = OPEN_X;
+      openRow = { row, close };
+    } else if (offset > OPEN_PUSH / 1.6 && pushable()) {
+      setOffset(OPEN_PUSH, true);
+      base = OPEN_PUSH;
       openRow = { row, close };
     } else close();
   };
@@ -1248,6 +1321,22 @@ function attachPress(el, row) {
     if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteWithSwipe(el.dataset.id, row, el); }
   });
   del.addEventListener("click", () => deleteWithSwipe(el.dataset.id, row, el));
+  push.addEventListener("click", () => pushWithSwipe(el.dataset.id, row, el));
+}
+
+/* Slide the card off to the right, fold the row away, then push it to tomorrow (with Undo). */
+function pushWithSwipe(key, row, el) {
+  if (openRow && openRow.row === row) openRow = null;
+  Feel.tap();
+  el.style.transition = "transform .24s ease-in";
+  el.style.transform = `translateX(${el.offsetWidth + 40}px)`;
+  const h = row.offsetHeight;
+  row.animate([{ height: h + "px", marginBottom: "0px" }, { height: "0px", marginBottom: "-10px" }], { duration: 260, delay: 170, easing: "ease-in-out", fill: "forwards" })
+    .finished.then(() => {
+      for (const s of SCOPES) cards[s].delete(key);
+      row.remove();
+      pushKeys([key]);
+    });
 }
 
 /* Slide the card off, fold the row away, then delete with an Undo option. */
@@ -1416,6 +1505,7 @@ function openTaskSheet(key, preset = null) {
   openSheet(`
     ${sheetHead(t ? W.Item : W.newItem)}
     <textarea class="field" id="taskTitle" rows="1" placeholder="${W.placeholder}" enterkeyhint="done" maxlength="120"></textarea>
+    ${item && canPush(item) ? `<button class="push-btn" data-push>${icon("arrowRight")}<span>Push to tomorrow<small>${GOALS && t.repeats ? "Skips today (streak safe); it's back tomorrow" : `Moves it to ${esc(dueLabel(tomorrowKey()))}`}</small></span></button>` : ""}
     ${t && GOALS ? skipBox() : ""}
     ${t && !GOALS ? `<div class="snooze-box">
       <div class="section-label">${icon("zzz", 'class="lbl-ic"')}Snooze</div>
@@ -1497,6 +1587,7 @@ function openTaskSheet(key, preset = null) {
       if (!b) return;
       const d = b.dataset;
       if (d.snooze) { finishSnooze(d.snooze); return; }
+      if ("push" in d) { live(); closeSheet(); pushKeys([key]); return; }
       if ("skip" in d || "unskip" in d) {
         const g = live();
         g.skips = "skip" in d ? [...new Set([...(g.skips || []), itemP])] : (g.skips || []).filter((k) => k !== itemP);

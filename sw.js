@@ -1,6 +1,6 @@
 // Offline support: use the network when it answers, fall back to the cached copy offline.
 // One cache per app (each app's worker is scoped to its own folder).
-const CACHE = "v13:" + new URL(self.registration.scope).pathname;
+const CACHE = "v14:" + new URL(self.registration.scope).pathname;
 const SHELL = [
   "./",
   "index.html",

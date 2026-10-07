@@ -458,3 +458,15 @@ button.hm-cell:active { transform: scale(1.4); }
 .tl-item.miss .tl-dot svg { color: #ff6b76; }
 .tl-item.miss .tl-title { color: rgba(255,255,255,.75); }
 .tl-item.miss time { color: #ff7b85; }
+
+/* ---------- Push to tomorrow ---------- */
+.swipe-push { position: absolute; inset: 0; border-radius: 22px; display: flex; align-items: center; justify-content: flex-start; gap: 7px; padding-left: 22px; color: #04121f; font-size: 15px; font-weight: 900; background: linear-gradient(90deg, #00e5ff, #4d7cff); opacity: 0; }
+.swipe-push svg { width: 19px; height: 19px; transition: transform 0.25s cubic-bezier(.34, 1.8, .64, 1); }
+.swipe-row.armed-push .swipe-push svg { transform: translateX(6px) scale(1.3); }
+.push-btn { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; border-radius: 18px; text-align: left; color: #04121f; background: linear-gradient(135deg, #00e5ff, #4d7cff); box-shadow: 0 6px 18px rgba(0, 150, 255, 0.35); }
+.push-btn svg { width: 22px; height: 22px; flex: none; }
+.push-btn span { display: grid; font-size: 17px; font-weight: 900; }
+.push-btn small { font-size: 12px; font-weight: 700; opacity: 0.75; }
+.push-btn:active { transform: scale(0.98); }
+.push-all { align-self: center; display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 99px; font-size: 14px; font-weight: 800; color: #9fe8ff; background: rgba(0, 229, 255, 0.1); border: 1px solid rgba(0, 229, 255, 0.35); margin-top: -6px; }
+.push-all svg { width: 16px; height: 16px; }
