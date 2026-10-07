@@ -62,7 +62,7 @@ svg { display: block; }
 /* ---------- Hero ---------- */
 .hero { display: flex; align-items: center; gap: 14px; position: relative; }
 .hero-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.hero h1 { margin: 0; font-size: clamp(34px, 10vw, 42px); font-weight: 900; letter-spacing: -0.02em; line-height: 1; background: linear-gradient(120deg, var(--a), var(--b)); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: 2px; }
+.hero h1 { margin: 0; text-align: left; font-size: clamp(34px, 10vw, 42px); font-weight: 900; letter-spacing: -0.02em; line-height: 1; background: linear-gradient(120deg, var(--a), var(--b)); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: 2px; }
 .hero .sub { font-size: 15px; font-weight: 600; color: var(--dim); }
 .hero .headline { font-size: 15px; font-weight: 700; color: rgba(255,255,255,.92); margin-top: 6px; text-wrap: balance; }
 .legend { display: grid; gap: 3px; margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--dim); }
@@ -470,3 +470,20 @@ button.hm-cell:active { transform: scale(1.4); }
 .push-btn:active { transform: scale(0.98); }
 .push-all { align-self: center; display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 99px; font-size: 14px; font-weight: 800; color: #9fe8ff; background: rgba(0, 229, 255, 0.1); border: 1px solid rgba(0, 229, 255, 0.35); margin-top: -6px; }
 .push-all svg { width: 16px; height: 16px; }
+
+/* ---------- Period picker ---------- */
+.title-btn { display: inline-flex; align-items: center; gap: 6px; justify-self: start; align-self: flex-start; padding: 0; text-align: left; border-radius: 12px; }
+.title-caret { width: 22px; height: 22px; color: var(--a); transform: rotate(90deg); transition: transform 0.25s; flex: none; }
+.page.strip-open .title-caret { transform: rotate(-90deg); }
+.page.past .hero h1 { font-size: clamp(28px, 8vw, 36px); }
+.back-now { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; padding: 7px 12px; border-radius: 99px; font-size: 13px; font-weight: 800; color: var(--ink); background: linear-gradient(135deg, var(--a), var(--b)); }
+.back-now svg { width: 14px; height: 14px; transform: rotate(180deg); }
+.page.past .ring-wrap { opacity: 0.85; }
+.period-strip { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; margin: -6px -2px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.period-strip::-webkit-scrollbar { display: none; }
+.pchip { position: relative; flex: none; min-width: 74px; display: grid; gap: 2px; padding: 9px 12px 12px; border-radius: 16px; text-align: left; background: rgba(255,255,255,.07); border: 1px solid var(--card-stroke); overflow: hidden; }
+.pchip b { font-size: 13px; font-weight: 900; white-space: nowrap; }
+.pchip small { font-size: 11px; font-weight: 700; color: var(--dim); }
+.pchip .pbar { position: absolute; left: 0; bottom: 0; height: 4px; width: var(--pct); background: linear-gradient(90deg, var(--a), var(--b)); }
+.pchip.on { background: linear-gradient(135deg, color-mix(in srgb, var(--a) 35%, transparent), color-mix(in srgb, var(--b) 25%, transparent)); border-color: var(--a); }
+.pchip.on small { color: #fff; }

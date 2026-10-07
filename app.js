@@ -293,6 +293,7 @@ function switchSpace(next) {
   if (openRow) openRow = null;
   settling.clear();
   snoozeOpen.clear();
+  for (const k of SCOPES) { viewOffset[k] = 0; stripOpen[k] = false; }
   for (const s of SCOPES) { cards[s].clear(); $("[data-list]", pages[s]).innerHTML = ""; chartSig[s] = null; }
   applySpace(true);
   if (user && cloud) watchSpace();
@@ -466,7 +467,7 @@ const itemFromKey = (key) => {
   return t ? { t, p: key.includes("@") ? key.split("@")[1] : periodKey(t.scope), key } : null;
 };
 /** Only things due today (or carried into today) and not yet done can be pushed. */
-const canPush = (item) => !!item && !isDone(item.t, item.p) && (item.t.sched ? item.p <= keyOf(now()) : item.t.scope === "day");
+const canPush = (item) => !!item && !isPastView("day") && !isDone(item.t, item.p) && (item.t.sched ? item.p <= keyOf(now()) : item.t.scope === "day");
 
 /** Push several rows; returns a single undo that restores them exactly. */
 function pushItems(list) {
@@ -574,6 +575,38 @@ function progress(scope, p = periodKey(scope)) {
   const done = v.filter((i) => isDone(i.t, i.p)).length;
   return { done, total: v.length, frac: v.length ? done / v.length : 0 };
 }
+/* ---------- Looking back at a past period ----------
+   viewOffset[scope] = how many periods back that page shows (0 = now). */
+const viewOffset = { day: 0, week: 0, month: 0, year: 0 };
+const isPastView = (s) => viewOffset[s] > 0;
+const viewKey = (s) => (viewOffset[s] ? periodKeyOffset(s, -viewOffset[s]) : periodKey(s));
+const HISTORY_SPAN = { day: 30, week: 12, month: 12, year: 5 };
+
+/** What a page listed back then, done or not: [{t, p, key}]. */
+function pastViewItems(scope, p) {
+  const end = addPeriods(scope, parseKey(p), 1).getTime();
+  const out = [];
+  for (const t of state.tasks) {
+    if (t.scope !== scope || t.createdAt >= end) continue;
+    if (t.repeats) {
+      if (t.start <= p && !isSkipped(t, p)) out.push({ t, p, key: `${t.id}@${p}` });
+      continue;
+    }
+    const doneIn = t.completions[0] ? t.completions[0].p : null;
+    // Tasks carried over until done, so an open (or later-finished) one-off was on every list since its start.
+    const shown = GOALS ? effective(t) === p : t.start <= p && (!doneIn || doneIn >= p);
+    if (shown) out.push({ t, p, key: `${t.id}@${p}` });
+  }
+  const from = parseKey(p);
+  for (const t of state.tasks) {
+    if (!t.sched || t.createdAt >= end || (scope !== "day" && !showsOn(t, scope))) continue;
+    for (const k of dueBetween(t, from, new Date(end))) if (!isSkipped(t, k)) out.push({ t, p: k, key: `${t.id}@${k}` });
+  }
+  return out;
+}
+/** Done at the time? A one-off counts as done in a past period only if it was finished in that period. */
+const doneThen = (i) => (i.t.repeats ? isDone(i.t, i.p) : !!i.t.completions[0] && i.t.completions[0].p === i.p);
+
 /** Everything that counted in a period that has ended: [{t, k (period or due date), done}]. Skips excluded. */
 function pastRows(scope, p) {
   const end = addPeriods(scope, parseKey(p), 1).getTime();
@@ -905,8 +938,9 @@ function buildPages() {
       <div class="page-inner">
         <header class="hero">
           <div class="hero-text">
-            <h1>${m.title}</h1>
+            <button class="title-btn" data-period-btn aria-expanded="false" aria-label="Choose which ${m.unit} to look at"><h1 data-title>${m.title}</h1>${icon("chev", 'class="title-caret"')}</button>
             <div class="sub" data-sub></div>
+            <button class="back-now" data-back-now hidden>${icon("arrowRight")}${s === "day" ? "Back to today" : `Back to this ${m.unit}`}</button>
             <div class="headline" data-headline></div>
             ${s === "day" ? '<div class="legend" data-legend></div>' : ""}
           </div>
@@ -915,6 +949,7 @@ function buildPages() {
             <div class="ring-center"><div class="pct" data-pct>0%</div>${s === "day" ? "" : '<div class="lbl">done</div>'}</div>
           </div>
         </header>
+        <div class="period-strip" data-strip hidden></div>
         <div class="chips" data-chips></div>
         <button class="history-btn" data-history>${icon("clock")}<span class="h-label">${W.history}</span><span class="h-sub" data-history-sub></span>${icon("chev", 'class="h-chev"')}</button>
         <div class="overdue-strip" data-overdue hidden></div>
@@ -935,6 +970,17 @@ function buildPages() {
     pager.appendChild(sec);
     pages[s] = sec;
     $("[data-history]", sec).addEventListener("click", () => { Feel.tap(); openHistory(); });
+    $("[data-period-btn]", sec).addEventListener("click", () => {
+      Feel.tap();
+      stripOpen[s] = !stripOpen[s];
+      renderStrip(s);
+      if (stripOpen[s]) $("[data-strip] .on", sec)?.scrollIntoView({ inline: "center", block: "nearest" });
+    });
+    $("[data-strip]", sec).addEventListener("click", (e) => {
+      const b = e.target.closest("[data-offset]");
+      if (b) setView(s, Number(b.dataset.offset));
+    });
+    $("[data-back-now]", sec).addEventListener("click", () => setView(s, 0));
     const pa = $("[data-push-all]", sec);
     if (pa) pa.addEventListener("click", () => pushKeys(items("day").filter(canPush).map((i) => i.key)));
     $("[data-snoozed]", sec).addEventListener("click", (e) => {
@@ -1040,18 +1086,68 @@ function queueSummary() {
   }, 1500);
 }
 
+/* ---------- Period picker ---------- */
+const stripOpen = { day: false, week: false, month: false, year: false };
+function viewTitle(s, off = viewOffset[s]) {
+  if (!off) return META[s].title;
+  const k = periodKeyOffset(s, -off);
+  if (off === 1) return { day: "Yesterday", week: "Last week", month: "Last month", year: "Last year" }[s];
+  const d = parseKey(k);
+  if (s === "day") return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  if (s === "week") return `Week of ${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  if (s === "month") return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  return String(d.getFullYear());
+}
+function renderStrip(s) {
+  const page = pages[s], strip = $("[data-strip]", page);
+  $("[data-period-btn]", page).setAttribute("aria-expanded", String(stripOpen[s]));
+  page.classList.toggle("strip-open", stripOpen[s]);
+  strip.hidden = !stripOpen[s];
+  if (!stripOpen[s]) return;
+  const chips = [];
+  for (let off = 0; off < HISTORY_SPAN[s]; off++) {
+    const k = off ? periodKeyOffset(s, -off) : periodKey(s);
+    const rows = off ? pastViewItems(s, k) : items(s, k);
+    const done = rows.filter(off ? doneThen : (i) => isDone(i.t, i.p)).length;
+    const pct = rows.length ? Math.round((done / rows.length) * 100) : null;
+    const label = off === 0 ? META[s].tab : s === "day" && off < 7 ? (off === 1 ? "Yesterday" : parseKey(k).toLocaleDateString(undefined, { weekday: "short" })) : viewTitle(s, off).replace("Week of ", "");
+    chips.push(`<button class="pchip ${off === viewOffset[s] ? "on" : ""}" data-offset="${off}" style="--pct:${pct ?? 0}%">
+      <b>${esc(label)}</b><small>${pct === null ? "–" : pct + "%"}</small><i class="pbar"></i></button>`);
+  }
+  strip.innerHTML = chips.join("");
+}
+function setView(s, off) {
+  if (viewOffset[s] === off) { stripOpen[s] = false; renderStrip(s); return; }
+  viewOffset[s] = off;
+  stripOpen[s] = off !== 0 && stripOpen[s];
+  Feel.tap();
+  cards[s].clear();
+  $("[data-list]", pages[s]).innerHTML = "";
+  renderPage(s);
+  $("[data-list]", pages[s]).animate([{ opacity: 0, transform: "translateX(-12px)" }, { opacity: 1, transform: "none" }], { duration: 300, easing: "ease-out" });
+}
+
 function renderPage(s) {
   const page = pages[s];
-  const p = periodKey(s);
-  const pr = progress(s, p);
+  const past = isPastView(s);
+  const p = viewKey(s);
+  const pastRowsNow = past ? pastViewItems(s, p) : null;
+  const pr = past
+    ? (() => { const done = pastRowsNow.filter(doneThen).length; return { done, total: pastRowsNow.length, frac: pastRowsNow.length ? done / pastRowsNow.length : 0 }; })()
+    : progress(s, p);
   const left = pr.total - pr.done;
 
+  $("[data-title]", page).textContent = viewTitle(s);
+  page.classList.toggle("past", past);
   $("[data-sub]", page).textContent = periodTitle(s, p);
-  const late = items(s, p).map(overdueSince).filter(Boolean).sort();
+  $("[data-back-now]", page).hidden = !past;
+  renderStrip(s);
+  const late = past ? [] : items(s, p).map(overdueSince).filter(Boolean).sort();
   const strip = $("[data-overdue]", page);
   strip.hidden = late.length === 0;
   if (late.length) strip.innerHTML = `${icon("alert")}<b>${late.length} overdue</b><span>Oldest ${lateText(late[0])}</span>`;
   $("[data-headline]", page).textContent =
+    past ? (pr.total === 0 ? `Nothing was on the list.` : left === 0 ? `Everything ${W.done}. Nice.` : `${pr.done} of ${pr.total} ${W.done}${GOALS ? `, ${left} missed` : ""}. Tap a circle to fix the record.`) :
     late.length ? `${late.length} overdue. Knock those out first.` :
     pr.total === 0 ? (GOALS ? "No goals set yet." : "A clean slate.") :
     left === 0 ? "All clear. Legendary." :
@@ -1062,7 +1158,7 @@ function renderPage(s) {
 
   for (const ring of page.querySelectorAll("[data-ring]")) {
     const r = ring.dataset.ring;
-    const f = progress(r).frac;
+    const f = past ? (r === s ? pr.frac : 0) : progress(r).frac;
     const c = Number(ring.dataset.c);
     ring.setAttribute("stroke-dashoffset", c * (1 - f));
     ring.setAttribute("opacity", f > 0 ? 1 : 0);
@@ -1071,15 +1167,17 @@ function renderPage(s) {
   const legend = $("[data-legend]", page);
   if (legend) {
     legend.innerHTML = SCOPES.map((x) => {
-      const q = progress(x);
-      return `<span style="${scopeVars(x)}"><i class="dot"></i>${x === "day" ? "Day" : META[x].tab} <b>${q.done}/${q.total}</b></span>`;
+      const q = past ? (x === s ? pr : null) : progress(x);
+      return q ? `<span style="${scopeVars(x)}"><i class="dot"></i>${x === "day" ? "Day" : META[x].tab} <b>${q.done}/${q.total}</b></span>` : "";
     }).join("");
   }
 
   const chips = [
-    { v: left, l: W.left, i: "dashed", col: META[s].colors[0] },
+    { v: left, l: past ? (GOALS ? "missed" : "not done") : W.left, i: "dashed", col: META[s].colors[0] },
     { v: pr.done, l: W.done, i: "seal", col: "#00F5A0" },
-    s === "day"
+    past
+      ? { v: Math.round(pr.frac * 100) + "%", l: W.done, i: "hourglass", col: META[s].colors[1] }
+      : s === "day"
       ? { v: dayStreak(), l: "day streak", i: "flame", col: "#FF8A00" }
       : { v: Math.round(elapsed(s) * 100) + "%", l: `of ${META[s].unit} gone`, i: "hourglass", col: META[s].colors[1] },
   ];
@@ -1089,21 +1187,26 @@ function renderPage(s) {
   }
   chips.forEach((c, i) => {
     const el = chipBox.children[i];
+    if (el.dataset.i !== c.i) { // the tile's meaning can change (e.g. looking back), so refresh its icon and color
+      el.dataset.i = c.i;
+      el.style.setProperty("--col", c.col);
+      $(".v svg", el).outerHTML = icon(c.i);
+    }
     setText($(".v span", el), String(c.v));
     $(".l", el).textContent = c.l;
   });
 
-  renderList(s, p);
-  renderSnoozed(s, p);
+  renderList(s, p, pastRowsNow);
+  if (past) $("[data-snoozed]", page).hidden = true; else renderSnoozed(s, p);
   const pa = $("[data-push-all]", page);
   if (pa) {
     const n = items("day").filter(canPush).length;
-    pa.hidden = n < 2;
+    pa.hidden = past || n < 2;
     $("span", pa).textContent = `Move ${n} unfinished to tomorrow`;
   }
   const n = doneSince(startOf(s, now()));
   $("[data-history-sub]", page).textContent = `${n} ${W.done} ${s === "day" ? "today" : `this ${META[s].unit}`}`;
-  renderCharts(s, p, pr);
+  renderCharts(s, past ? periodKey(s) : p, past ? progress(s) : pr); // charts always describe the current period
 }
 
 function setText(el, text) {
@@ -1113,9 +1216,10 @@ function setText(el, text) {
   if (first) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
 }
 
-function ordered(s, p) {
-  return items(s, p).sort((a, b) => {
-    const ad = isDone(a.t, a.p) && !settling.has(a.key), bd = isDone(b.t, b.p) && !settling.has(b.key);
+function ordered(s, p, pastRowsNow) {
+  const done = pastRowsNow ? doneThen : (i) => isDone(i.t, i.p);
+  return (pastRowsNow ? [...pastRowsNow] : items(s, p)).sort((a, b) => {
+    const ad = done(a) && !settling.has(a.key), bd = done(b) && !settling.has(b.key);
     if (ad !== bd) return ad ? 1 : -1;
     const ao = overdueSince(a), bo = overdueSince(b);
     if (!!ao !== !!bo) return ao ? -1 : 1;
@@ -1125,10 +1229,10 @@ function ordered(s, p) {
   });
 }
 
-function renderList(s, p) {
+function renderList(s, p, pastRowsNow = null) {
   const page = pages[s];
   const list = $("[data-list]", page);
-  const rows = ordered(s, p);
+  const rows = ordered(s, p, pastRowsNow);
   $("[data-empty]", page).hidden = rows.length > 0;
 
   const before = new Map();
@@ -1201,7 +1305,8 @@ function createCard(key) {
 function updateCard(row, item, s, p) {
   const { t } = item;
   const el = $(".task", row);
-  const done = isDone(t, item.p);
+  const past = isPastView(s);
+  const done = past ? doneThen(item) : isDone(t, item.p);
   el.style.setProperty("--hue", HUES[t.hue % HUES.length]);
   el.classList.toggle("done", done);
   const hit = $(".orb-hit", el);
@@ -1211,7 +1316,7 @@ function updateCard(row, item, s, p) {
   $(".task-title", el).textContent = t.title;
   const badges = [];
   const st = taskStreak(t);
-  const late = overdueSince(item);
+  const late = past ? null : overdueSince(item);
   el.classList.toggle("overdue", !!late);
   if (late) badges.push(badge(`${lateText(late)} · due ${dueLabel(late)}`, "alert", "#FF5A5F", "late"));
   if (t.sched) {
@@ -1379,7 +1484,8 @@ function toggle(key, el) {
   const page = el.closest(".page");
   const s = page ? page.dataset.scope : colorScope(t);
   const p = key.includes("@") ? key.split("@")[1] : periodKey(t.scope);
-  if (isDone(t, p)) {
+  const past = isPastView(s);
+  if (past ? doneThen({ t, p }) : isDone(t, p)) {
     t.completions = t.repeats ? t.completions.filter((c) => c.p !== p) : [];
     Feel.undo();
     save();
@@ -1387,8 +1493,15 @@ function toggle(key, el) {
     return;
   }
   const pr = progress(s);
-  const finishes = pr.total - pr.done === 1;
-  t.completions.push({ p, at: Date.now() });
+  const finishes = !past && pr.total - pr.done === 1;
+  if (past) {
+    // Fixing the record: file the check-off inside that period, not today.
+    const end = (t.sched || s === "day" ? addDays(parseKey(p), 1) : addPeriods(t.scope, parseKey(p), 1)).getTime();
+    const at = Math.min(Date.now(), end - 60000);
+    if (t.repeats) t.completions.push({ p, at }); else t.completions = [{ p, at }];
+  } else {
+    t.completions.push({ p, at: Date.now() });
+  }
   save();
 
   const hue = HUES[t.hue % HUES.length];
